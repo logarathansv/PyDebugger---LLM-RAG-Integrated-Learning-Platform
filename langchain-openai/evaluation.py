@@ -9,6 +9,9 @@ from transformers import AutoTokenizer
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 import streamlit as st
+
+import logging
+from typing import Optional, Tuple
 # 1. Create/load test dataset
 test_data = [
     {
@@ -124,20 +127,155 @@ analyser = Together(
     api_key="tgp_v1_VlOsAsjxF5mGEzlEBXcGwtVeW25r3gn1OAyci8ZjZJk",
 )
 
-def analyse_python(content):
-    system_prompt = """
-    You are a Python learning assistant. Your task is to check whether the query is related to python or not.
-    If the query is related to python, you will reply with "Yes". Otherwise, you will reply with "No".
-    But only a single word should be a reply.
-    Query : {content}
-    """
+# Configure logging
+logging.basicConfig(
+    filename='python_classifier.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-    response = analyser.chat.completions.create(
-        model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        messages=[{"role":"user","content":system_prompt.format(content=content)}]
-    )
+class PythonQueryClassifier:
+    def __init__(self, analyser):
+        self.analyser = analyser
+        self.python_keywords = {
+            # Core Python
+            "python", "python2", "python3", "py", "py2", "py3", "cpython", "pypy", 
+            "jython", "ironpython", "micropython", "circuitpython",
+            
+            # Package managers
+            "pip", "pip3", "conda", "anaconda", "miniconda", "poetry", "pipenv", 
+            "pyenv", "virtualenv", "venv", "requirements.txt",
+            
+            # Popular frameworks
+            "django", "flask", "fastapi", "pyramid", "bottle", "tornado", 
+            "sanic", "cherrypy", "falcon", "quart",
+            
+            # Data science & ML
+            "numpy", "pandas", "scipy", "matplotlib", "seaborn", "scikit-learn", 
+            "sklearn", "tensorflow", "pytorch", "keras", "opencv", "pillow",
+            
+            # Web scraping
+            "beautifulsoup", "bs4", "scrapy", "selenium", "requests", "urllib",
+            
+            # Testing
+            "pytest", "unittest", "nose", "doctest", "mock", "coverage",
+            
+            # Documentation
+            "sphinx", "pydoc", "docstring", "readthedocs",
+            
+            # Build tools
+            "setuptools", "distutils", "wheel", "twine", "build",
+            
+            # Async
+            "asyncio", "async", "await", "aiohttp",
+            
+            # Type checking
+            "mypy", "typing", "typehint", "pyright",
+            
+            # Other important libs
+            "sqlalchemy", "sqlite", "psycopg", "pygame", "tkinter", "pyqt", 
+            "pyside", "kivy", "wxpython"
+        }
+        
+        self.python_file_extensions = {".py", ".pyc", ".pyo", ".pyd", ".pyi", ".pyw", ".pyz"}
+    
+    def _contains_python_keywords(self, content: str) -> bool:
+        """Check if content contains any Python-specific keywords"""
+        content_lower = content.lower()
+        return any(
+            keyword in content_lower 
+            for keyword in self.python_keywords
+        ) or any(
+            ext in content_lower 
+            for ext in self.python_file_extensions
+        )
+    
+    def _get_llm_classification(self, content: str) -> Tuple[str, float]:
+        """Get classification from LLM with confidence estimation"""
+        system_prompt = """
+        You are a Python query classifier. Strictly analyze if the query is specifically about:
+        - Python programming language (syntax, libraries, debugging)
+        - Python-related tools/frameworks
+        - Python-specific errors/exceptions
+        - Python version differences
+        - Python environment setup
 
-    return (response.choices[0].message.content)
+        Respond ONLY with "Yes" or "No" - no explanations.
+
+        Examples:
+        Q: How to use decorators in Python?
+        A: Yes
+
+        Q: What's the difference between Java and Python?
+        A: No
+
+        Q: My Python code gives a TypeError
+        A: Yes
+
+        Now classify this:
+        {content}
+        """
+        
+        try:
+            response = self.analyser.chat.completions.create(
+                model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+                messages=[{"role": "user", "content": system_prompt.format(content=content)}],
+                temperature=0.1,  # Lower temperature for more deterministic outputs
+                max_tokens=3,
+            )
+            
+            result = response.choices[0].message.content.strip().lower()
+            confidence = 1.0  # Placeholder - implement actual confidence calculation
+            
+            # Validate response format
+            if result not in {"Yes", "No"}:
+                logging.warning(f"Unexpected LLM response: {result}")
+                return "No", 0.5
+                
+            return result, confidence
+            
+        except Exception as e:
+            logging.error(f"LLM classification failed: {str(e)}")
+            return "No", 0.5
+    
+    def classify(self, content: str) -> str:
+        """Hybrid classification of whether content is Python-related"""
+        if not content.strip():
+            return "No"
+        
+        # Step 1: Rule-based pre-processing
+        if self._contains_python_keywords(content):
+            logging.info(f"Rule-based match: {content[:50]}...")
+            return "Yes"
+        
+        # Step 2: LLM classification
+        llm_result, confidence = self._get_llm_classification(content)
+        
+        # Step 3: Confidence-based post-processing
+        if confidence < 0.7:  # Threshold for uncertain cases
+            logging.info(f"Low confidence classification ({confidence:.2f}): {content[:50]}...")
+            # Additional verification could be added here
+            if self._contains_python_keywords(content):  # Double-check
+                return "Yes"
+        
+        return llm_result
+
+classifier = PythonQueryClassifier(analyser= analyser)
+
+# def analyse_python(content):
+#     system_prompt = """
+#     You are a Python learning assistant. Your task is to check whether the query is related to python or not.
+#     If the query is related to python, you will reply with "Yes". Otherwise, you will reply with "No".
+#     But only a single word should be a reply.
+#     Query : {content}
+#     """
+
+#     response = analyser.chat.completions.create(
+#         model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+#         messages=[{"role":"user","content":system_prompt.format(content=content)}]
+#     )
+
+#     return (response.choices[0].message.content)
 
 
 def get_chatbot_response(query):
@@ -147,7 +285,7 @@ def get_chatbot_response(query):
     """
     try:
         # Step 1: Check if query is Python-related using your existing function
-        is_python = analyse_python(query) == "Yes"
+        is_python = classifier.classify(query) == "Yes"
         
         if not is_python:
             return False  # Early exit for non-Python queries
@@ -284,32 +422,6 @@ def generate_answer(query, context_docs, citations, mode):
 
     return answer,formatted_citations
 
-
-# More realistic version that actually calls your chatbot components:
-def get_chatbot_response_advanced(query, selected_pdfs=["default"]):
-    """
-    Advanced version that actually interacts with your RAG system
-    """
-    try:
-        if analyse_python(query) != "Yes":
-            return False
-        
-        relevant_docs, _ = find_context(query, selected_pdfs, mode="Programming Tutor")
-        
-        if not relevant_docs:
-            return False
-            
-        answer, _ = generate_answer(query, relevant_docs, [], "Programming Tutor")
-        
-        python_keywords = ["python", "import", "def ", "class ", "lambda", "numpy", "pandas"]
-        if any(keyword in answer.content.lower() for keyword in python_keywords):
-            return True
-        return False
-        
-    except Exception as e:
-        print(f"Error in advanced response for: {query}. Error: {e}")
-        return False
-
 # 2. Define evaluation function
 def evaluate_model(df):
     # Mock prediction (replace with actual chatbot calls)
@@ -325,12 +437,39 @@ def evaluate_model(df):
     }
     return metrics
 
-# 3. Run evaluation
-metrics = evaluate_model(df)
-print(metrics)
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# 4. Z-score calculation
-baseline_accuracy = 0.5
-baseline_std = 0.1
-z_score = (metrics["accuracy"] - baseline_accuracy) / baseline_std
-print(f"Z-Score: {z_score:.2f}")
+metrics = evaluate_model(df)
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.barplot(x=list(metrics.keys()), y=list(metrics.values()), palette="Blues_d")
+ax.set_title("Classification Metrics for Python Detection")
+ax.set_ylim(0, 1)
+for i, v in enumerate(metrics.values()):
+    ax.text(i, v + 0.02, f"{v:.2f}", ha='center')
+
+plt.savefig('classification_metrics.png')  # Saves to file
+plt.close()
+
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+metrics = evaluate_model(df)
+
+cm = confusion_matrix(df["actual_relevant"], df["predicted_relevant"])
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, 
+                            display_labels=["Not Python", "Python"])
+disp.plot(cmap='Blues')
+plt.title("Confusion Matrix - Python Detection")
+plt.savefig("confusion_matrix.png")
+plt.close()
+
+
+# # 3. Run evaluation
+# metrics = evaluate_model(df)
+# print(metrics)
+
+# # 4. Z-score calculation
+# baseline_accuracy = 0.5
+# baseline_std = 0.1
+# z_score = (metrics["accuracy"] - baseline_accuracy) / baseline_std
+# print(f"Z-Score: {z_score:.2f}")

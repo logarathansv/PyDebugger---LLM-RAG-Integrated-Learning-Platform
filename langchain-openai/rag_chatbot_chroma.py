@@ -5,7 +5,7 @@ from openai import BadRequestError
 import streamlit as st
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import MarkdownTextSplitter, RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS  # Changed from Chroma to FAISS for efficiency
+from langchain_community.vectorstores import FAISS  
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
@@ -86,27 +86,79 @@ st.set_page_config(
 # Dark Mode UI
 st.markdown("""
     <style>
-    .stApp { background-color: #0E1117; color: #FFFFFF; }
-    .stChatInput input { background-color: #1E1E1E !important; color: #FFFFFF !important; border: 1px solid #3A3A3A !important; }
-    .stChatMessage p, .stChatMessage div { color: #FFFFFF !important; }
-    .stFileUploader { background-color: #1E1E1E; border: 1px solid #3A3A3A; border-radius: 5px; padding: 15px; }
-    h1, h2, h3 { color: #00FFAA !important; }
-    .context-box { 
-        background-color: #1E1E1E; 
-        border: 1px solid #3A3A3A; 
-        border-radius: 5px; 
-        padding: 10px; 
+    .stApp {
+        background-color: #FFFFFF;
+        color: #000000;
+    }
+    .stChatInput input {
+        background-color: #F9F9F9 !important;
+        color: #000000 !important;
+        border: 1px solid #CCCCCC !important;
+    }
+    .stChatMessage p, .stChatMessage div {
+        color: #000000 !important;
+    }
+    .stFileUploader {
+        background-color: #F9F9F9;
+        border: 1px solid #CCCCCC;
+        border-radius: 5px;
+        padding: 15px;
+    }
+    h1, h2, h3 {
+        color: #00796B !important;
+    }
+    .context-box {
+        background-color: #FAFAFA;
+        border: 1px solid #DDDDDD;
+        border-radius: 5px;
+        padding: 10px;
         margin-top: 10px;
         font-family: monospace;
         font-size: 0.9em;
     }
     .context-title {
-        color: #00FFAA;
+        color: #00796B;
         font-weight: bold;
         margin-bottom: 5px;
     }
+
+    /* Sidebar light styling */
+    section[data-testid="stSidebar"] {
+        background-color: #F7F7F7;
+    }
+
+    /* File uploader title */
+    .stFileUploader label {
+        color: #000000 !important;
+    }
+
+    /* Buttons */
+    button {
+        background-color: #E0F2F1;
+        color: #000000;
+        border: 1px solid #CCCCCC;
+    }
+
+    /* Input boxes and text areas */
+    textarea, input[type="text"] {
+        background-color: #FFFFFF !important;
+        color: #000000 !important;
+        border: 1px solid #CCCCCC !important;
+    }
+
+    /* Radio buttons */
+    .stRadio label {
+        color: #000000 !important;
+    }
+
+    /* Checkbox text */
+    .stCheckbox span {
+        color: #000000 !important;
+    }
+
     </style>
     """, unsafe_allow_html=True)
+
 
 # System Config
 PDF_STORAGE_PATH = 'document_store/pdfs/'
@@ -337,7 +389,9 @@ def process_document(file_name, file_path):
             )
             for i, chunk in enumerate(chunks)
         ]
-        
+
+        print(documents)
+
         vector_store = FAISS.from_documents(
             documents=documents,
             embedding=EMBEDDING_MODEL
@@ -369,7 +423,7 @@ def find_context(query, selected_pdfs, mode):
             continue
                 
         # Create a retriever with compression for better results
-        compressor = LLMChainExtractor.from_llm(LANGUAGE_MODEL)
+        compressor = LLMChainExtractor.from_llm(analyser)
         compression_retriever = ContextualCompressionRetriever(
             base_compressor=compressor,
             base_retriever=store.as_retriever(search_kwargs={"k": 3},
@@ -509,7 +563,7 @@ if st.sidebar.button("❌ Delete Files") and delete_pdf != "None":
         # Delete the vector store files
         import shutil
         shutil.rmtree(os.path.join(VECTOR_DB_PATH, delete_pdf.replace(" ", "_").lower()))
-        shutil.rmtree(os.path.join(VECTOR_DB_PATH_ERROR, delete_pdf.replace(" ", "_").lower()))
+        # shutil.rmtree(os.path.join(VECTOR_DB_PATH_ERROR, delete_pdf.replace(" ", "_").lower()))
         
         # Remove from session state
         if delete_pdf in st.session_state.pdf_vector_stores:
