@@ -124,7 +124,7 @@ LANGUAGE_MODEL = AzureChatOpenAI(
 )
 
 analyser = Together(
-    api_key="tgp_v1_VlOsAsjxF5mGEzlEBXcGwtVeW25r3gn1OAyci8ZjZJk",
+    api_key=os.getenv("TOGETHER_API_KEY"),
 )
 
 # Configure logging
