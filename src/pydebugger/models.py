@@ -13,6 +13,14 @@ class AssistantMode(str, Enum):
     RUBBER_DUCK = "Rubber Duck Assistant"
 
 
+class ExecutionState(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class DocumentSource:
     id: str
@@ -58,11 +66,22 @@ class TutorResponse:
 
 @dataclass(frozen=True)
 class ExecutionResult:
+    execution_id: str | None = None
     stdout: str = ""
     stderr: str = ""
     exit_code: int | None = None
     duration_seconds: float = 0.0
     timed_out: bool = False
+    cancelled: bool = False
+    resource_limit_exceeded: bool = False
     truncated: bool = False
     disabled_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionJob:
+    id: str
+    state: ExecutionState
+    result: ExecutionResult | None = None
+    error: str | None = None
 

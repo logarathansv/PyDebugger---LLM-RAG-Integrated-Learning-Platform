@@ -15,7 +15,7 @@ The backend is split into modules with narrow responsibilities:
 - `ingestion.py` — safe document extraction and chunking
 - `retrieval.py` — vector indexing and corpus-wide ranking
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
-- `execution.py` — code-execution interface and disabled-by-default local runner
+- `execution.py` — asynchronous, cancellable Docker execution jobs
 - `engine.py` — the single composition root used by the application
 
 The current vector index is intentionally in memory for the first consolidation
@@ -24,31 +24,44 @@ can be added later behind these service boundaries.
 
 ## Run the supported application
 
-Python 3.10 or newer is required.
+Python 3.13 is the supported runtime. `uv.lock` pins the complete dependency
+graph, and `.python-version` pins the Python patch release.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
+uv sync --locked --extra dev
 Copy-Item .env.example .env
-streamlit run app.py
+uv run --locked streamlit run app.py
 ```
 
 Populate `.env` with an Azure OpenAI base endpoint, API key, chat deployment,
 and embedding deployment. The endpoint should be the resource base URL, not a
 deployment-specific request URL.
 
-Code execution is disabled by default. Setting
-`PYDEBUGGER_ALLOW_LOCAL_EXECUTION=true` enables a subprocess runner with an
-execution deadline and response truncation for trusted local development. It is
-not a security sandbox and must not be exposed to untrusted classroom users.
+Configuration is validated before providers or storage are initialized. Invalid
+URLs, placeholders, numeric limits, mutable execution images, and unavailable
+Docker runtimes produce a clear startup error without printing secrets.
+
+Code execution is disabled by default. To enable the isolated runner, start the
+Docker Linux engine and pull the exact pinned image from `.env.example`:
+
+```powershell
+docker pull python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+# Set PYDEBUGGER_EXECUTION_BACKEND="docker" in .env
+uv run --locked streamlit run app.py
+```
+
+Each submission runs outside the app server in a disposable container with no
+network, a read-only root filesystem and source mount, an unprivileged user, no
+Linux capabilities, no-new-privileges, and CPU, memory, process, temporary
+storage, output, source-size, and time limits. Runs can be cancelled and are
+forcibly cleaned up. See `docs/EXECUTION_SECURITY.md` for the threat model and
+deployment requirements.
 
 ## Test the backend
 
 ```powershell
-python -m pip install -e ".[dev]"
-python -m pytest
+uv run --locked --extra dev pytest
+uv lock --check
 ```
 
 The tests use fake AI providers, so they do not consume API credits.
@@ -68,7 +81,7 @@ reStructuredText raw directives and external file insertion are disabled.
 
 - The document catalog and vector index live for the current app session only.
 - Azure OpenAI is the supported provider adapter.
-- Code execution is off unless explicitly enabled for trusted development.
+- Code execution is off unless the Docker backend and pinned image pass startup checks.
 - Authentication, courses, enrollment, durable student history, assignments,
   and instructor dashboards are planned after the core engine is strengthened.
 

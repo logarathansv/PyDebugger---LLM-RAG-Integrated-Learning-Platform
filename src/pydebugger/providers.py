@@ -21,7 +21,7 @@ class AzureOpenAIProvider(ChatProvider, EmbeddingProvider):
     """Thin adapter that keeps LangChain out of the domain services."""
 
     def __init__(self, settings: Settings) -> None:
-        settings.validate_ai()
+        settings.validate(require_ai=True)
         from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
         common = {

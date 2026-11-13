@@ -13,7 +13,13 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from pydebugger import AssistantMode, ChatMessage, PyDebuggerEngine, Settings
+from pydebugger import (
+    AssistantMode,
+    ChatMessage,
+    ExecutionState,
+    PyDebuggerEngine,
+    Settings,
+)
 from pydebugger.config import ConfigurationError
 from pydebugger.ingestion import IngestionError
 
@@ -107,16 +113,41 @@ with chat_tab:
 
 with runner_tab:
     st.caption(
-        "Execution is disabled by default. The optional local runner is for trusted development use only."
+        "Execution is disabled by default. When enabled, each run uses a disposable, "
+        "resource-limited Docker container."
     )
     source = st.text_area("Python code", height=320)
     if st.button("Run code", disabled=not source.strip()):
-        result = engine.execute(source)
-        if result.disabled_reason:
-            st.warning(result.disabled_reason)
-        else:
-            st.code(result.stdout or "No output", language="text")
-            if result.stderr:
-                st.error(result.stderr)
-            st.caption(f"Exit: {result.exit_code} · {result.duration_seconds:.3f}s")
+        job = engine.start_execution(source)
+        st.session_state.execution_job_id = job.id
+        st.rerun()
+
+    execution_job_id = st.session_state.get("execution_job_id")
+    if execution_job_id:
+        job = engine.get_execution(execution_job_id)
+        if job.state in {ExecutionState.QUEUED, ExecutionState.RUNNING}:
+            st.info(f"Execution is {job.state.value}.")
+            refresh_column, cancel_column = st.columns(2)
+            if refresh_column.button("Refresh execution status"):
+                st.rerun()
+            if cancel_column.button("Cancel execution"):
+                engine.cancel_execution(job.id)
+                st.rerun()
+        elif job.error:
+            st.error(job.error)
+        elif job.result:
+            result = job.result
+            if result.cancelled:
+                st.warning("Execution was cancelled.")
+            if result.timed_out:
+                st.warning("Execution reached its deadline.")
+            if result.resource_limit_exceeded:
+                st.warning("Execution reached a resource limit.")
+            if result.disabled_reason:
+                st.warning(result.disabled_reason)
+            else:
+                st.code(result.stdout or "No output", language="text")
+                if result.stderr:
+                    st.error(result.stderr)
+                st.caption(f"Exit: {result.exit_code} · {result.duration_seconds:.3f}s")
 

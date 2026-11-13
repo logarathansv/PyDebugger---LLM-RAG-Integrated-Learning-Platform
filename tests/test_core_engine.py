@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 
 from pydebugger import AssistantMode, Settings
+from pydebugger.config import ExecutionBackend
 from pydebugger.engine import PyDebuggerEngine
-from pydebugger.execution import DisabledExecutor, LocalSubprocessExecutor
+from pydebugger.execution import DisabledExecutor
 from pydebugger.ingestion import DocumentIngestor
 from pydebugger.models import ChatMessage, DocumentSource
 from pydebugger.retrieval import InMemoryVectorIndex
@@ -35,7 +36,7 @@ class FakeAIProvider:
         return "Use a loop and check source [1]."
 
 
-def make_settings(tmp_path: Path, allow_execution: bool = False) -> Settings:
+def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
         azure_openai_endpoint=None,
@@ -43,9 +44,17 @@ def make_settings(tmp_path: Path, allow_execution: bool = False) -> Settings:
         azure_chat_deployment=None,
         azure_embedding_deployment=None,
         azure_openai_api_version="test",
-        allow_local_execution=allow_execution,
+        execution_backend=ExecutionBackend.DISABLED,
         execution_timeout_seconds=0.2,
-        execution_output_limit=100,
+        execution_output_limit=10_000,
+        execution_source_limit=100_000,
+        execution_memory_mb=128,
+        execution_cpus=0.5,
+        execution_pids_limit=32,
+        execution_tmpfs_mb=16,
+        docker_binary="docker",
+        docker_image="python@example@sha256:test",
+        docker_runtime=None,
         upload_limit_bytes=10_000,
         retrieval_limit=3,
     )
@@ -148,17 +157,4 @@ def test_execution_is_disabled_by_default(tmp_path: Path):
     result = engine.execute("print('hello')")
 
     assert result.disabled_reason
-
-
-def test_local_executor_captures_syntax_errors():
-    result = LocalSubprocessExecutor(timeout_seconds=1).execute("def broken(:\n    pass")
-
-    assert result.exit_code != 0
-    assert "SyntaxError" in result.stderr
-
-
-def test_local_executor_times_out():
-    result = LocalSubprocessExecutor(timeout_seconds=0.1).execute("while True:\n    pass")
-
-    assert result.timed_out
 

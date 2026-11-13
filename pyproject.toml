@@ -6,18 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "pydebugger-learning-platform"
 version = "0.1.0"
 description = "Document-grounded programming tutor and debugging engine"
-requires-python = ">=3.10"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "python-dotenv",
-    "langchain-openai",
-    "pdfplumber",
-    "python-pptx",
-    "docutils",
-    "streamlit",
+    "python-dotenv>=1.2.2,<2",
+    "langchain-openai>=1.7.4,<2",
+    "pdfplumber>=0.11.10,<0.12",
+    "python-pptx>=1.0.2,<2",
+    "docutils>=0.23,<0.24",
+    "streamlit>=1.67,<2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8.4.1,<9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

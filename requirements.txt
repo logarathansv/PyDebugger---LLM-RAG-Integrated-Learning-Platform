@@ -1,8 +1,8 @@
-# Supported consolidated application. Install the local package afterward with:
-#   python -m pip install -e .
-streamlit
-langchain-openai
-pdfplumber
-python-dotenv
-python-pptx
-docutils
+# Compatibility input for pip users. `uv.lock` is the authoritative lockfile.
+# For a fully reproducible install, follow README.md and run `uv sync --locked`.
+streamlit>=1.67,<2
+langchain-openai>=1.7.4,<2
+pdfplumber>=0.11.10,<0.12
+python-dotenv>=1.2.2,<2
+python-pptx>=1.0.2,<2
+docutils>=0.23,<0.24

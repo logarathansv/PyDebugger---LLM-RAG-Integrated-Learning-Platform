@@ -9,10 +9,23 @@ import re
 from threading import RLock
 import uuid
 
-from .config import Settings
-from .execution import CodeExecutor, DisabledExecutor, LocalSubprocessExecutor
+from .config import ExecutionBackend, Settings
+from .execution import (
+    CodeExecutor,
+    DisabledExecutor,
+    DockerCodeExecutor,
+    DockerExecutionPolicy,
+    ExecutionService,
+)
 from .ingestion import DocumentIngestor, IngestionError
-from .models import AssistantMode, ChatMessage, DocumentSource, ExecutionResult, TutorResponse
+from .models import (
+    AssistantMode,
+    ChatMessage,
+    DocumentSource,
+    ExecutionJob,
+    ExecutionResult,
+    TutorResponse,
+)
 from .providers import AzureOpenAIProvider, ChatProvider, EmbeddingProvider
 from .retrieval import InMemoryVectorIndex
 from .tutoring import TutorService
@@ -34,14 +47,9 @@ class PyDebuggerEngine:
         self.ingestor = DocumentIngestor()
         self.index = InMemoryVectorIndex(embedding_provider)
         self.tutor = TutorService(chat_provider, self.index, settings.retrieval_limit)
-        self.executor = executor or (
-            LocalSubprocessExecutor(
-                settings.execution_timeout_seconds,
-                settings.execution_output_limit,
-            )
-            if settings.allow_local_execution
-            else DisabledExecutor()
-        )
+        self.executor = executor or self._build_executor(settings)
+        self.executor.validate_runtime()
+        self.execution = ExecutionService(self.executor)
         self._documents: dict[str, DocumentSource] = {}
         self._lock = RLock()
         (settings.data_dir / "uploads").mkdir(parents=True, exist_ok=True)
@@ -109,7 +117,23 @@ class PyDebuggerEngine:
         return self.tutor.answer(query, mode, selected, history)
 
     def execute(self, source: str) -> ExecutionResult:
-        return self.executor.execute(source)
+        execution_id = uuid.uuid4().hex
+        return self.executor.execute(source, execution_id)
+
+    def start_execution(self, source: str) -> ExecutionJob:
+        return self.execution.submit(source)
+
+    def get_execution(self, execution_id: str) -> ExecutionJob:
+        return self.execution.get(execution_id)
+
+    def cancel_execution(self, execution_id: str) -> bool:
+        return self.execution.cancel(execution_id)
+
+    @staticmethod
+    def _build_executor(settings: Settings) -> CodeExecutor:
+        if settings.execution_backend is ExecutionBackend.DOCKER:
+            return DockerCodeExecutor(DockerExecutionPolicy.from_settings(settings))
+        return DisabledExecutor()
 
     @staticmethod
     def _safe_filename(filename: str) -> str:
