@@ -20,6 +20,7 @@ def valid_settings(tmp_path: Path) -> Settings:
         azure_openai_api_version="2024-10-21",
         execution_backend=ExecutionBackend.DISABLED,
         execution_timeout_seconds=5,
+        execution_max_attempts=2,
         execution_output_limit=20_000,
         execution_source_limit=100_000,
         execution_memory_mb=128,
@@ -30,6 +31,10 @@ def valid_settings(tmp_path: Path) -> Settings:
         docker_image="python@sha256:abc",
         docker_runtime=None,
         upload_limit_bytes=10_000,
+        background_workers=2,
+        background_queue_size=8,
+        ingestion_timeout_seconds=10,
+        ingestion_max_attempts=3,
         retrieval_limit=5,
         retrieval_min_score=0.25,
     )

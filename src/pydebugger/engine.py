@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import re
-from threading import RLock
+from threading import Event, RLock
+import time
+from typing import Callable
 import uuid
 
 from .config import ExecutionBackend, Settings
@@ -17,6 +19,7 @@ from .execution import (
     ExecutionService,
 )
 from .ingestion import DocumentIngestor, IngestionError
+from .jobs import IngestionJobService, JobCancelledError, JobTimeoutError
 from .models import (
     AssistantMode,
     ChatMessage,
@@ -24,6 +27,7 @@ from .models import (
     ExecutionJob,
     ExecutionResult,
     HintProgress,
+    IngestionJob,
     TutorResponse,
 )
 from .providers import (
@@ -32,7 +36,12 @@ from .providers import (
     ChatProvider,
     EmbeddingProvider,
 )
-from .retrieval import ChromaVectorIndex, VectorIndex
+from .retrieval import (
+    ChromaVectorIndex,
+    EmbeddingMismatchError,
+    RetrievalError,
+    VectorIndex,
+)
 from .tutoring import TutorService
 from .youtube import (
     TranscriptError,
@@ -44,6 +53,8 @@ from .youtube import (
 
 
 class PyDebuggerEngine:
+    _YOUTUBE_JOB_MEDIA_TYPE = "application/x-pydebugger-youtube-reference"
+
     def __init__(
         self,
         settings: Settings,
@@ -70,19 +81,54 @@ class PyDebuggerEngine:
         )
         self.executor = executor or self._build_executor(settings)
         self.executor.validate_runtime()
-        self.execution = ExecutionService(self.executor)
+        self.execution = ExecutionService(
+            self.executor,
+            workers=settings.background_workers,
+            queue_size=settings.background_queue_size,
+            max_attempts=settings.execution_max_attempts,
+        )
         self.transcript_provider = transcript_provider
         self._documents: dict[str, DocumentSource] = {}
         self._lock = RLock()
+        self._source_locks: dict[str, RLock] = {}
         (settings.data_dir / "uploads").mkdir(parents=True, exist_ok=True)
         self._restore_document_catalog()
+        self.ingestion_jobs = IngestionJobService(
+            self._run_ingestion_job,
+            workers=settings.background_workers,
+            queue_size=settings.background_queue_size,
+            timeout_seconds=settings.ingestion_timeout_seconds,
+            max_attempts=settings.ingestion_max_attempts,
+            retryable=self._is_retryable_ingestion_error,
+        )
 
     def add_document(
         self,
         filename: str,
         data: bytes,
         declared_media_type: str | None = None,
+        **control: object,
     ) -> DocumentSource:
+        safe_name = self._safe_filename(filename)
+        source_key = f"upload:{safe_name.casefold()}"
+        with self._source_operation_lock(source_key):
+            return self._add_document_locked(
+                filename, data, declared_media_type, **control
+            )
+
+    def _add_document_locked(
+        self,
+        filename: str,
+        data: bytes,
+        declared_media_type: str | None = None,
+        *,
+        _report: Callable[[float, str], None] | None = None,
+        _deadline: float | None = None,
+        _cancel_event: Event | None = None,
+    ) -> DocumentSource:
+        report = _report or (lambda progress, message: None)
+        self._check_ingestion_control(_deadline, _cancel_event)
+        report(0.05, "Validating upload")
         if not data:
             raise IngestionError("The uploaded document is empty")
         if len(data) > self.settings.upload_limit_bytes:
@@ -91,6 +137,8 @@ class PyDebuggerEngine:
         media_type = self.ingestor.validate_upload(
             safe_name, data, declared_media_type
         )
+        self._check_ingestion_control(_deadline, _cancel_event)
+        report(0.15, "Preparing document revision")
         source_key = f"upload:{safe_name.casefold()}"
         document_id = self._stable_id("upload", source_key)
         content_hash = hashlib.sha256(data).hexdigest()
@@ -98,6 +146,7 @@ class PyDebuggerEngine:
         with self._lock:
             current = self._documents.get(document_id)
         if current and current.index_version == index_version:
+            report(1.0, "Document is already indexed")
             return current
         upload_dir = self.settings.data_dir / "uploads" / document_id
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +155,7 @@ class PyDebuggerEngine:
             path.write_bytes(data)
         except OSError as error:
             raise IngestionError("The uploaded document could not be stored") from error
+        report(0.3, "Document stored; extracting text")
         source = DocumentSource(
             id=document_id,
             name=safe_name,
@@ -120,7 +170,10 @@ class PyDebuggerEngine:
             },
         )
         try:
+            self._check_ingestion_control(_deadline, _cancel_event)
             chunks = self.ingestor.ingest(source)
+            self._check_ingestion_control(_deadline, _cancel_event)
+            report(0.65, f"Extracted {len(chunks)} chunks; creating embeddings")
             self.index.replace_document(document_id, chunks)
         except Exception:
             path.unlink(missing_ok=True)
@@ -128,15 +181,49 @@ class PyDebuggerEngine:
             raise
         with self._lock:
             self._documents[source.id] = source
+        report(0.95, "Finalizing document revision")
         if current and current.path != path:
             current.path.unlink(missing_ok=True)
         return source
+
+    def start_document_ingestion(
+        self,
+        filename: str,
+        data: bytes,
+        declared_media_type: str | None = None,
+    ) -> IngestionJob:
+        return self.ingestion_jobs.submit(filename, data, declared_media_type)
+
+    def get_ingestion(self, job_id: str) -> IngestionJob:
+        return self.ingestion_jobs.get(job_id)
+
+    def cancel_ingestion(self, job_id: str) -> bool:
+        return self.ingestion_jobs.cancel(job_id)
 
     def add_youtube_transcript(
         self,
         reference: str,
         languages: tuple[str, ...] = ("en",),
+        **control: object,
     ) -> DocumentSource:
+        video_id = parse_youtube_video_id(reference)
+        with self._source_operation_lock(f"youtube:{video_id}"):
+            return self._add_youtube_transcript_locked(
+                reference, languages, **control
+            )
+
+    def _add_youtube_transcript_locked(
+        self,
+        reference: str,
+        languages: tuple[str, ...] = ("en",),
+        *,
+        _report: Callable[[float, str], None] | None = None,
+        _deadline: float | None = None,
+        _cancel_event: Event | None = None,
+    ) -> DocumentSource:
+        report = _report or (lambda progress, message: None)
+        self._check_ingestion_control(_deadline, _cancel_event)
+        report(0.05, "Validating YouTube reference")
         video_id = parse_youtube_video_id(reference)
         normalized_languages = tuple(
             language.strip().lower()
@@ -154,10 +241,12 @@ class PyDebuggerEngine:
             raise IngestionError("Transcript languages must be valid language codes")
 
         provider = self.transcript_provider or YouTubeTranscriptProvider()
+        report(0.15, "Fetching transcript")
         try:
             transcript = provider.fetch(video_id, normalized_languages)
         except TranscriptError as error:
             raise IngestionError(str(error)) from error
+        self._check_ingestion_control(_deadline, _cancel_event)
         transcript_text = "\n".join(segment.text for segment in transcript.segments)
         transcript_data = transcript_text.encode("utf-8")
         if not transcript_data:
@@ -172,6 +261,7 @@ class PyDebuggerEngine:
         with self._lock:
             current = self._documents.get(document_id)
         if current and current.index_version == index_version:
+            report(1.0, "Transcript is already indexed")
             return current
         upload_dir = self.settings.data_dir / "uploads" / document_id
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -182,6 +272,7 @@ class PyDebuggerEngine:
             path.write_bytes(transcript_data)
         except OSError as error:
             raise IngestionError("The video transcript could not be stored") from error
+        report(0.35, "Transcript stored; preparing timestamped chunks")
         source = DocumentSource(
             id=document_id,
             name=f"YouTube {video_id}",
@@ -201,7 +292,10 @@ class PyDebuggerEngine:
             },
         )
         try:
+            self._check_ingestion_control(_deadline, _cancel_event)
             chunks = self.ingestor.ingest_youtube(source, transcript)
+            self._check_ingestion_control(_deadline, _cancel_event)
+            report(0.65, f"Prepared {len(chunks)} chunks; creating embeddings")
             self.index.replace_document(document_id, chunks)
         except Exception:
             path.unlink(missing_ok=True)
@@ -209,15 +303,34 @@ class PyDebuggerEngine:
             raise
         with self._lock:
             self._documents[source.id] = source
+        report(0.95, "Finalizing transcript revision")
         if current and current.path != path:
             current.path.unlink(missing_ok=True)
         return source
+
+    def start_youtube_ingestion(
+        self,
+        reference: str,
+        languages: tuple[str, ...] = ("en",),
+    ) -> IngestionJob:
+        encoded_languages = "\n".join(languages).encode("utf-8")
+        return self.ingestion_jobs.submit(
+            reference, encoded_languages, self._YOUTUBE_JOB_MEDIA_TYPE
+        )
 
     def list_documents(self) -> tuple[DocumentSource, ...]:
         with self._lock:
             return tuple(self._documents.values())
 
     def remove_document(self, document_id: str) -> bool:
+        with self._lock:
+            source = self._documents.get(document_id)
+        if source is None:
+            return False
+        with self._source_operation_lock(source.source_key or source.id):
+            return self._remove_document_locked(document_id)
+
+    def _remove_document_locked(self, document_id: str) -> bool:
         with self._lock:
             source = self._documents.get(document_id)
         if source is None:
@@ -301,6 +414,55 @@ class PyDebuggerEngine:
                     "original_filename": metadata.get("original_filename", source_name),
                 },
             )
+
+    def _source_operation_lock(self, source_key: str) -> RLock:
+        with self._lock:
+            return self._source_locks.setdefault(source_key, RLock())
+
+    def _run_ingestion_job(
+        self,
+        filename: str,
+        data: bytes,
+        declared_media_type: str | None,
+        report: Callable[[float, str], None],
+        deadline: float,
+        cancel_event: Event,
+    ) -> DocumentSource:
+        if declared_media_type == self._YOUTUBE_JOB_MEDIA_TYPE:
+            try:
+                languages = tuple(data.decode("utf-8").splitlines())
+            except UnicodeDecodeError as error:
+                raise IngestionError("Transcript language data is invalid") from error
+            return self.add_youtube_transcript(
+                filename,
+                languages,
+                _report=report,
+                _deadline=deadline,
+                _cancel_event=cancel_event,
+            )
+        return self.add_document(
+            filename,
+            data,
+            declared_media_type,
+            _report=report,
+            _deadline=deadline,
+            _cancel_event=cancel_event,
+        )
+
+    @staticmethod
+    def _check_ingestion_control(
+        deadline: float | None, cancel_event: Event | None
+    ) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise JobCancelledError("Ingestion was cancelled")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise JobTimeoutError("Document ingestion exceeded its configured deadline")
+
+    @staticmethod
+    def _is_retryable_ingestion_error(error: Exception) -> bool:
+        return isinstance(error, (OSError, RetrievalError)) and not isinstance(
+            error, EmbeddingMismatchError
+        )
 
     @staticmethod
     def _safe_filename(filename: str) -> str:

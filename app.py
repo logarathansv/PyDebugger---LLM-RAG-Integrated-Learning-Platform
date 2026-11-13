@@ -45,6 +45,8 @@ except Exception as error:
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "ingestion_job_ids" not in st.session_state:
+    st.session_state.ingestion_job_ids = []
 
 with st.sidebar:
     st.header("Learning resources")
@@ -56,12 +58,47 @@ with st.sidebar:
     if uploads and st.button("Index uploaded files"):
         for upload in uploads:
             try:
-                engine.add_document(upload.name, upload.getvalue(), upload.type)
-                st.success(f"Indexed {upload.name}")
+                job = engine.start_document_ingestion(
+                    upload.name, upload.getvalue(), upload.type
+                )
+                st.session_state.ingestion_job_ids.append(job.id)
+                st.success(f"Queued {upload.name}")
             except IngestionError as error:
                 st.error(f"{upload.name}: {error}")
             except Exception as error:
-                st.error(f"Could not index {upload.name}: {error}")
+                st.error(f"Could not queue {upload.name}: {error}")
+
+    active_ingestion = False
+    for job_id in list(st.session_state.ingestion_job_ids):
+        try:
+            job = engine.get_ingestion(job_id)
+        except KeyError:
+            st.session_state.ingestion_job_ids.remove(job_id)
+            continue
+        st.caption(
+            f"{job.message} · attempt {job.attempt}/{job.max_attempts}"
+            if job.attempt
+            else job.message
+        )
+        st.progress(job.progress)
+        if job.state in {
+            ExecutionState.QUEUED,
+            ExecutionState.RUNNING,
+            ExecutionState.RETRYING,
+        }:
+            active_ingestion = True
+            if st.button("Cancel ingestion", key=f"cancel-ingestion-{job.id}"):
+                engine.cancel_ingestion(job.id)
+                st.rerun()
+        elif job.state is ExecutionState.COMPLETED and job.result:
+            st.success(f"Indexed {job.result.name}")
+        elif job.state is ExecutionState.CANCELLED:
+            st.warning(job.error or job.message)
+        else:
+            code = f" ({job.error_code})" if job.error_code else ""
+            st.error(f"{job.error or job.message}{code}")
+    if active_ingestion and st.button("Refresh ingestion progress"):
+        st.rerun()
 
     st.subheader("YouTube transcript")
     youtube_reference = st.text_input(
@@ -78,8 +115,9 @@ with st.sidebar:
             languages = tuple(
                 item.strip() for item in transcript_languages.split(",") if item.strip()
             )
-            source = engine.add_youtube_transcript(youtube_reference, languages)
-            st.success(f"Indexed {source.name}")
+            job = engine.start_youtube_ingestion(youtube_reference, languages)
+            st.session_state.ingestion_job_ids.append(job.id)
+            st.success("Queued YouTube transcript")
         except IngestionError as error:
             st.error(str(error))
         except Exception as error:
@@ -171,24 +209,40 @@ with runner_tab:
     )
     source = st.text_area("Python code", height=320)
     if st.button("Run code", disabled=not source.strip()):
-        job = engine.start_execution(source)
-        st.session_state.execution_job_id = job.id
-        st.rerun()
+        try:
+            job = engine.start_execution(source)
+            st.session_state.execution_job_id = job.id
+            st.rerun()
+        except Exception as error:
+            st.error(f"Could not queue execution: {error}")
 
     execution_job_id = st.session_state.get("execution_job_id")
     if execution_job_id:
         job = engine.get_execution(execution_job_id)
-        if job.state in {ExecutionState.QUEUED, ExecutionState.RUNNING}:
-            st.info(f"Execution is {job.state.value}.")
+        if job.state in {
+            ExecutionState.QUEUED,
+            ExecutionState.RUNNING,
+            ExecutionState.RETRYING,
+        }:
+            st.info(job.message)
+            st.progress(job.progress)
+            if job.attempt:
+                st.caption(f"Attempt {job.attempt}/{job.max_attempts}")
             refresh_column, cancel_column = st.columns(2)
             if refresh_column.button("Refresh execution status"):
                 st.rerun()
             if cancel_column.button("Cancel execution"):
                 engine.cancel_execution(job.id)
                 st.rerun()
-        elif job.error:
-            st.error(job.error)
-        elif job.result:
+        else:
+            if job.error:
+                code = f" ({job.error_code})" if job.error_code else ""
+                st.error(f"{job.error}{code}")
+        if job.result and job.state not in {
+            ExecutionState.QUEUED,
+            ExecutionState.RUNNING,
+            ExecutionState.RETRYING,
+        }:
             result = job.result
             if result.cancelled:
                 st.warning("Execution was cancelled.")

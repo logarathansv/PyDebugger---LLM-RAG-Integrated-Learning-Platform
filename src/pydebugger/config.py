@@ -62,6 +62,7 @@ class Settings:
     azure_openai_api_version: str
     execution_backend: ExecutionBackend
     execution_timeout_seconds: float
+    execution_max_attempts: int
     execution_output_limit: int
     execution_source_limit: int
     execution_memory_mb: int
@@ -72,6 +73,10 @@ class Settings:
     docker_image: str
     docker_runtime: str | None
     upload_limit_bytes: int
+    background_workers: int
+    background_queue_size: int
+    ingestion_timeout_seconds: float
+    ingestion_max_attempts: int
     retrieval_limit: int
     retrieval_min_score: float
 
@@ -110,6 +115,7 @@ class Settings:
             execution_timeout_seconds=_env_float(
                 "PYDEBUGGER_EXECUTION_TIMEOUT_SECONDS", 5.0
             ),
+            execution_max_attempts=_env_int("PYDEBUGGER_EXECUTION_MAX_ATTEMPTS", 2),
             execution_output_limit=_env_int(
                 "PYDEBUGGER_EXECUTION_OUTPUT_LIMIT", 20_000
             ),
@@ -130,6 +136,12 @@ class Settings:
             upload_limit_bytes=_env_int(
                 "PYDEBUGGER_UPLOAD_LIMIT_BYTES", 10 * 1024 * 1024
             ),
+            background_workers=_env_int("PYDEBUGGER_BACKGROUND_WORKERS", 2),
+            background_queue_size=_env_int("PYDEBUGGER_BACKGROUND_QUEUE_SIZE", 8),
+            ingestion_timeout_seconds=_env_float(
+                "PYDEBUGGER_INGESTION_TIMEOUT_SECONDS", 120.0
+            ),
+            ingestion_max_attempts=_env_int("PYDEBUGGER_INGESTION_MAX_ATTEMPTS", 3),
             retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 5),
             retrieval_min_score=_env_float("PYDEBUGGER_RETRIEVAL_MIN_SCORE", 0.25),
         )
@@ -155,6 +167,26 @@ class Settings:
         self._check_range(
             errors, "PYDEBUGGER_UPLOAD_LIMIT_BYTES", self.upload_limit_bytes, 1, 100_000_000
         )
+        self._check_range(
+            errors, "PYDEBUGGER_BACKGROUND_WORKERS", self.background_workers, 1, 16
+        )
+        self._check_range(
+            errors, "PYDEBUGGER_BACKGROUND_QUEUE_SIZE", self.background_queue_size, 0, 100
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_INGESTION_TIMEOUT_SECONDS",
+            self.ingestion_timeout_seconds,
+            5.0,
+            600.0,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_INGESTION_MAX_ATTEMPTS",
+            self.ingestion_max_attempts,
+            1,
+            5,
+        )
         self._check_range(errors, "PYDEBUGGER_RETRIEVAL_LIMIT", self.retrieval_limit, 1, 20)
         self._check_range(
             errors, "PYDEBUGGER_RETRIEVAL_MIN_SCORE", self.retrieval_min_score, 0.0, 1.0
@@ -165,6 +197,13 @@ class Settings:
             self.execution_timeout_seconds,
             0.1,
             30.0,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_EXECUTION_MAX_ATTEMPTS",
+            self.execution_max_attempts,
+            1,
+            3,
         )
         self._check_range(
             errors,

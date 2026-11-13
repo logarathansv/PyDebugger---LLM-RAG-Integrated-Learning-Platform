@@ -18,6 +18,7 @@ The backend is split into modules with narrow responsibilities:
 - `hints.py` — LangGraph hint progression and duplicate prevention
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
 - `execution.py` — asynchronous, cancellable Docker execution jobs
+- `jobs.py` — bounded background queues, retries, deadlines, and progress
 - `engine.py` — the single composition root used by the application
 
 The supported vector backend is a local persistent Chroma collection. It records
@@ -34,6 +35,12 @@ some cloud-hosting IP ranges.
 
 The validation rules, parser limits, metadata contract, and transcript behavior
 are documented in `docs/INGESTION.md`.
+
+Document uploads and YouTube transcripts run as background jobs with bounded
+worker and queue capacity. Jobs expose progress, current phase, attempt count,
+and stable terminal states. Invalid input fails immediately; transient storage
+or indexing errors retry up to the configured limit. See
+`docs/BACKGROUND_JOBS.md` for lifecycle and timeout semantics.
 
 ## Run the supported application
 

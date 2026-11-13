@@ -6,12 +6,13 @@ It never executes student code in the Streamlit/application process.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import subprocess
 import tempfile
-from threading import Event, Lock, Thread
+from threading import BoundedSemaphore, Event, Lock, Thread
 import time
 from typing import BinaryIO, Protocol
 import uuid
@@ -24,6 +25,7 @@ from .diagnostics import (
     remove_diagnostic_records,
 )
 from .models import ExecutionJob, ExecutionResult, ExecutionState
+from .jobs import JobQueueFullError
 
 
 class CodeExecutor(Protocol):
@@ -380,26 +382,51 @@ class _MutableJob:
     state: ExecutionState
     result: ExecutionResult | None = None
     error: str | None = None
+    error_code: str | None = None
+    progress: float = 0.0
+    message: str = "Queued"
+    attempt: int = 0
+    max_attempts: int = 1
+    cancel_event: Event = field(default_factory=Event)
 
 
 class ExecutionService:
     """Manage asynchronous execution jobs and cancellation."""
 
-    def __init__(self, executor: CodeExecutor) -> None:
+    def __init__(
+        self,
+        executor: CodeExecutor,
+        *,
+        workers: int = 2,
+        queue_size: int = 8,
+        max_attempts: int = 1,
+    ) -> None:
         self.executor = executor
+        self._max_attempts = max_attempts
+        self._pool = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="pydebugger-execution"
+        )
+        self._capacity = BoundedSemaphore(workers + queue_size)
         self._jobs: dict[str, _MutableJob] = {}
         self._lock = Lock()
 
     def submit(self, source: str) -> ExecutionJob:
+        if not self._capacity.acquire(blocking=False):
+            raise JobQueueFullError(
+                "The execution queue is full. Wait for a running submission to finish."
+            )
         execution_id = uuid.uuid4().hex
         with self._lock:
-            self._jobs[execution_id] = _MutableJob(ExecutionState.QUEUED)
-        Thread(
-            target=self._run,
-            args=(execution_id, source),
-            name=f"pydebugger-execution-{execution_id}",
-            daemon=True,
-        ).start()
+            self._jobs[execution_id] = _MutableJob(
+                ExecutionState.QUEUED, max_attempts=self._max_attempts
+            )
+        try:
+            self._pool.submit(self._run, execution_id, source)
+        except Exception:
+            self._capacity.release()
+            with self._lock:
+                self._jobs.pop(execution_id, None)
+            raise
         return self.get(execution_id)
 
     def get(self, execution_id: str) -> ExecutionJob:
@@ -407,7 +434,17 @@ class ExecutionService:
             job = self._jobs.get(execution_id)
             if job is None:
                 raise KeyError(f"Unknown execution job: {execution_id}")
-            return ExecutionJob(execution_id, job.state, job.result, job.error)
+            return ExecutionJob(
+                id=execution_id,
+                state=job.state,
+                result=job.result,
+                error=job.error,
+                error_code=job.error_code,
+                progress=job.progress,
+                message=job.message,
+                attempt=job.attempt,
+                max_attempts=job.max_attempts,
+            )
 
     def cancel(self, execution_id: str) -> bool:
         with self._lock:
@@ -415,8 +452,10 @@ class ExecutionService:
             if job is None or job.state not in {
                 ExecutionState.QUEUED,
                 ExecutionState.RUNNING,
+                ExecutionState.RETRYING,
             }:
                 return False
+            job.cancel_event.set()
             if job.state is ExecutionState.QUEUED:
                 job.state = ExecutionState.CANCELLED
                 job.result = ExecutionResult(
@@ -424,29 +463,104 @@ class ExecutionService:
                     cancelled=True,
                     stderr="Execution was cancelled before it started.",
                 )
+                job.progress = 1.0
+                job.message = "Cancelled before execution started"
+                job.error_code = "cancelled"
+                return True
+            if job.state is ExecutionState.RETRYING:
+                job.state = ExecutionState.CANCELLED
+                job.progress = 1.0
+                job.message = "Cancelled before retry"
+                job.error_code = "cancelled"
                 return True
         return self.executor.cancel(execution_id)
 
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._pool.shutdown(wait=wait, cancel_futures=True)
+
     def _run(self, execution_id: str, source: str) -> None:
-        with self._lock:
-            if self._jobs[execution_id].state is ExecutionState.CANCELLED:
-                return
-            self._jobs[execution_id].state = ExecutionState.RUNNING
         try:
-            result = self.executor.execute(source, execution_id)
-            state = (
-                ExecutionState.CANCELLED
-                if result.cancelled
-                else ExecutionState.FAILED
-                if result.disabled_reason or result.exit_code not in {None, 0}
-                else ExecutionState.COMPLETED
-            )
-            with self._lock:
-                job = self._jobs[execution_id]
-                job.state = state
-                job.result = result
-        except Exception as error:
-            with self._lock:
-                job = self._jobs[execution_id]
-                job.state = ExecutionState.FAILED
-                job.error = str(error)
+            for attempt in range(1, self._max_attempts + 1):
+                with self._lock:
+                    job = self._jobs[execution_id]
+                    if job.cancel_event.is_set():
+                        job.state = ExecutionState.CANCELLED
+                        job.progress = 1.0
+                        job.message = "Execution cancelled"
+                        job.error_code = "cancelled"
+                        return
+                    job.state = ExecutionState.RUNNING
+                    job.progress = 0.1
+                    job.message = "Running in isolated container"
+                    job.attempt = attempt
+                try:
+                    result = self.executor.execute(source, execution_id)
+                    state = (
+                        ExecutionState.CANCELLED
+                        if result.cancelled
+                        else ExecutionState.TIMED_OUT
+                        if result.timed_out
+                        else ExecutionState.FAILED
+                        if result.disabled_reason or result.exit_code not in {None, 0}
+                        else ExecutionState.COMPLETED
+                    )
+                    with self._lock:
+                        job = self._jobs[execution_id]
+                        job.state = state
+                        job.result = result
+                        job.progress = 1.0
+                        job.message = self._result_message(state)
+                        if state in {ExecutionState.FAILED, ExecutionState.TIMED_OUT}:
+                            job.error_code = (
+                                "execution_timeout"
+                                if state is ExecutionState.TIMED_OUT
+                                else "execution_failed"
+                            )
+                            job.error = self._result_error(result)
+                    return
+                except Exception as error:
+                    if attempt >= self._max_attempts:
+                        with self._lock:
+                            job = self._jobs[execution_id]
+                            job.state = ExecutionState.FAILED
+                            job.progress = 1.0
+                            job.error_code = "executor_unavailable"
+                            job.error = str(error).strip() or type(error).__name__
+                            job.message = job.error
+                        return
+                    with self._lock:
+                        job = self._jobs[execution_id]
+                        job.state = ExecutionState.RETRYING
+                        job.message = (
+                            f"Execution infrastructure failed; retrying "
+                            f"({attempt + 1}/{self._max_attempts})"
+                        )
+                    if job.cancel_event.wait(min(0.25 * attempt, 1.0)):
+                        with self._lock:
+                            job = self._jobs[execution_id]
+                            job.state = ExecutionState.CANCELLED
+                            job.progress = 1.0
+                            job.message = "Cancelled before retry"
+                            job.error_code = "cancelled"
+                        return
+        finally:
+            self._capacity.release()
+
+    @staticmethod
+    def _result_message(state: ExecutionState) -> str:
+        return {
+            ExecutionState.COMPLETED: "Execution completed",
+            ExecutionState.CANCELLED: "Execution cancelled",
+            ExecutionState.TIMED_OUT: "Execution timed out",
+            ExecutionState.FAILED: "Execution failed",
+        }.get(state, state.value)
+
+    @staticmethod
+    def _result_error(result: ExecutionResult) -> str:
+        if result.disabled_reason:
+            return result.disabled_reason
+        if result.timed_out:
+            return result.stderr.strip() or "Execution exceeded its configured deadline"
+        if result.diagnostic:
+            return f"{result.diagnostic.exception_type}: {result.diagnostic.message}"
+        return result.stderr.strip() or f"Execution exited with code {result.exit_code}"

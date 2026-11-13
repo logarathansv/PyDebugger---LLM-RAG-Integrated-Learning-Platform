@@ -13,12 +13,18 @@ class AssistantMode(str, Enum):
     RUBBER_DUCK = "Rubber Duck Assistant"
 
 
-class ExecutionState(str, Enum):
+class JobState(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    RETRYING = "retrying"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+# Compatibility name retained for callers of the execution API.
+ExecutionState = JobState
 
 
 @dataclass(frozen=True)
@@ -123,4 +129,22 @@ class ExecutionJob:
     state: ExecutionState
     result: ExecutionResult | None = None
     error: str | None = None
+    error_code: str | None = None
+    progress: float = 0.0
+    message: str = "Queued"
+    attempt: int = 0
+    max_attempts: int = 1
+
+
+@dataclass(frozen=True)
+class IngestionJob:
+    id: str
+    state: JobState
+    result: DocumentSource | None = None
+    error: str | None = None
+    error_code: str | None = None
+    progress: float = 0.0
+    message: str = "Queued"
+    attempt: int = 0
+    max_attempts: int = 1
 
