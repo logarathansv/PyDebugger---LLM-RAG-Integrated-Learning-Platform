@@ -43,8 +43,11 @@ def valid_settings(tmp_path: Path) -> Settings:
         background_queue_size=8,
         ingestion_timeout_seconds=10,
         ingestion_max_attempts=3,
-        retrieval_limit=5,
+        retrieval_limit=3,
         retrieval_min_score=0.25,
+        retrieval_context_tokens=2_500,
+        conversation_context_tokens=750,
+        llm_max_output_tokens=600,
     )
 
 

@@ -17,6 +17,7 @@ dependencies = [
     "python-pptx>=1.0.2,<2",
     "docutils>=0.23,<0.24",
     "streamlit>=1.67,<2",
+    "streamlit-monaco-editor==0.1.6",
     "youtube-transcript-api>=1.2.5,<2",
 ]
 

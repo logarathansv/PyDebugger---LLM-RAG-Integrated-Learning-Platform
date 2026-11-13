@@ -104,6 +104,9 @@ class Settings:
     ingestion_max_attempts: int
     retrieval_limit: int
     retrieval_min_score: float
+    retrieval_context_tokens: int
+    conversation_context_tokens: int
+    llm_max_output_tokens: int
 
     @classmethod
     def from_env(
@@ -192,8 +195,17 @@ class Settings:
                 "PYDEBUGGER_INGESTION_TIMEOUT_SECONDS", 120.0
             ),
             ingestion_max_attempts=_env_int("PYDEBUGGER_INGESTION_MAX_ATTEMPTS", 3),
-            retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 5),
+            retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 3),
             retrieval_min_score=_env_float("PYDEBUGGER_RETRIEVAL_MIN_SCORE", 0.25),
+            retrieval_context_tokens=_env_int(
+                "PYDEBUGGER_RETRIEVAL_CONTEXT_TOKENS", 2_500
+            ),
+            conversation_context_tokens=_env_int(
+                "PYDEBUGGER_CONVERSATION_CONTEXT_TOKENS", 750
+            ),
+            llm_max_output_tokens=_env_int(
+                "PYDEBUGGER_LLM_MAX_OUTPUT_TOKENS", 600
+            ),
         )
         settings.validate(require_ai=require_ai)
         return settings
@@ -242,6 +254,27 @@ class Settings:
         self._check_range(errors, "PYDEBUGGER_RETRIEVAL_LIMIT", self.retrieval_limit, 1, 20)
         self._check_range(
             errors, "PYDEBUGGER_RETRIEVAL_MIN_SCORE", self.retrieval_min_score, 0.0, 1.0
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_RETRIEVAL_CONTEXT_TOKENS",
+            self.retrieval_context_tokens,
+            256,
+            16_000,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_CONVERSATION_CONTEXT_TOKENS",
+            self.conversation_context_tokens,
+            128,
+            4_000,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_LLM_MAX_OUTPUT_TOKENS",
+            self.llm_max_output_tokens,
+            64,
+            4_000,
         )
         for name, value in (
             ("PYDEBUGGER_CHAT_INPUT_COST_PER_MILLION", self.chat_input_cost_per_million),

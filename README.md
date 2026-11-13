@@ -15,6 +15,7 @@ The backend is split into modules with narrow responsibilities:
 - `ingestion.py` — safe document extraction and chunking
 - `youtube.py` — validated video references and transcript-provider adapter
 - `retrieval.py` — vector indexing and corpus-wide ranking
+- `routing.py` — bounded LangGraph request routing with rule-based classification
 - `hints.py` — LangGraph hint progression and duplicate prevention
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
 - `execution.py` — asynchronous, cancellable Docker execution jobs
@@ -55,6 +56,110 @@ configuration. See `docs/QUALITY_MONITORING.md`.
 Python 3.13 is the supported runtime. `uv.lock` pins the complete dependency
 graph, and `.python-version` pins the Python patch release.
 
+### Windows step-by-step guide
+
+1. Install the required tools:
+
+   - Python 3.13
+   - [uv](https://docs.astral.sh/uv/getting-started/installation/)
+   - Docker Desktop only if you want to execute student code
+
+2. Open PowerShell and enter the repository directory:
+
+   ```powershell
+   Set-Location "N:\CODE\Codex\PyDebugger---LLM-RAG-Integrated-Learning-Platform"
+   ```
+
+3. Install the exact locked dependencies:
+
+   ```powershell
+   uv sync --locked --extra dev
+   ```
+
+4. Create the local environment file if it does not already exist:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+5. Open `.env` and configure Google Gemini:
+
+   ```dotenv
+   PYDEBUGGER_AI_PROVIDER="gemini"
+   GOOGLE_API_KEY="your-google-ai-studio-key"
+   GOOGLE_CHAT_MODEL="gemini-3.5-flash-lite"
+   GOOGLE_EMBEDDING_MODEL="gemini-embedding-001"
+   ```
+
+   Create a key at [Google AI Studio](https://aistudio.google.com/apikey). Never
+   commit the `.env` file or share its API key.
+
+6. Optional: enable the isolated Python lab. Start Docker Desktop, wait for the
+   Docker engine to become ready, and run:
+
+   ```powershell
+   docker pull python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+   ```
+
+   Then set this value in `.env`:
+
+   ```dotenv
+   PYDEBUGGER_EXECUTION_BACKEND="docker"
+   ```
+
+   Keep `PYDEBUGGER_EXECUTION_BACKEND="disabled"` when Docker is unavailable.
+   Tutoring and document retrieval will still work, but code execution will be
+   disabled.
+
+7. Start the application:
+
+   ```powershell
+   uv run --locked streamlit run app.py
+   ```
+
+8. Open [http://localhost:8501](http://localhost:8501) in your browser. To use a
+   different port:
+
+   ```powershell
+   uv run --locked streamlit run app.py --server.port 8502
+   ```
+
+9. Verify the main workflows:
+
+   - Upload a PDF, TXT, Markdown, CSV, RST, or PPTX document.
+   - Select the indexed document and ask a question in **Tutor**.
+   - Open **Python lab**, edit `main.py`, add files or tests, and select
+     **Run project**.
+   - Open **System health** to review operations, failures, latency, and usage.
+
+10. Run the automated tests:
+
+    ```powershell
+    uv run --locked pytest -q
+    uv lock --check
+    ```
+
+    Docker integration tests are optional and require the Docker engine plus the
+    pinned image:
+
+    ```powershell
+    $env:PYDEBUGGER_RUN_DOCKER_TESTS="1"
+    uv run --locked pytest -q tests\test_execution_docker.py
+    ```
+
+11. Stop the application by returning to its PowerShell window and pressing
+    `Ctrl+C`.
+
+### Common startup problems
+
+- **Configuration error:** confirm `.env` contains a valid Gemini or Azure key.
+- **Port already in use:** start with `--server.port 8502` or another free port.
+- **Docker backend is not ready:** start Docker Desktop and confirm `docker version`
+  succeeds.
+- **Pinned image is missing:** repeat the `docker pull` command from step 6.
+- **Old embeddings fail after changing models:** use a new
+  `PYDEBUGGER_VECTOR_COLLECTION` value in `.env`.
+
 ```powershell
 uv sync --locked --extra dev
 Copy-Item .env.example .env
@@ -70,6 +175,15 @@ chat deployment, and embedding deployment.
 The current Gemini defaults are `gemini-3.5-flash-lite` for tutoring and
 `gemini-embedding-001` for retrieval. Changing the embedding model requires a
 new `PYDEBUGGER_VECTOR_COLLECTION` name so incompatible vectors are never mixed.
+
+Token controls default to three retrieved chunks, a 2,500-token retrieval
+context budget, a 750-token conversation budget (at most six relevant messages),
+and 600 output tokens. Override `PYDEBUGGER_RETRIEVAL_LIMIT`,
+`PYDEBUGGER_RETRIEVAL_CONTEXT_TOKENS`,
+`PYDEBUGGER_CONVERSATION_CONTEXT_TOKENS`, or
+`PYDEBUGGER_LLM_MAX_OUTPUT_TOKENS` when a course needs different limits. Request
+routing and hint-stage updates are deterministic; they do not consume an extra
+model call.
 
 Configuration is validated before providers or storage are initialized. Invalid
 URLs, placeholders, numeric limits, mutable execution images, and unavailable

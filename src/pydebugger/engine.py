@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 import re
-from threading import Event, RLock
 import time
-from typing import Callable, TypeVar
 import uuid
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from threading import Event, RLock
+from typing import TypeVar
 
 from .config import AIProvider, ExecutionBackend, Settings
 from .execution import (
@@ -23,17 +24,22 @@ from .jobs import IngestionJobService, JobCancelledError, JobTimeoutError
 from .models import (
     AssistantMode,
     ChatMessage,
+    DocumentChunk,
     DocumentSource,
     ExecutionJob,
+    ExecutionProject,
     ExecutionResult,
+    ExecutionTestCase,
     HintProgress,
     IngestionJob,
+    ProjectFile,
+    RetrievedChunk,
     TutorResponse,
 )
 from .monitoring import (
+    MetricSummary,
     MonitoredChatProvider,
     MonitoredEmbeddingProvider,
-    MetricSummary,
     MonitoringStore,
     OperationMetric,
 )
@@ -61,7 +67,102 @@ from .youtube import (
 )
 
 
-class PyDebuggerEngine:
+class DocumentProcessor(DocumentIngestor):
+    """Load validated documents and split them into traceable text chunks."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        super().__init__()
+
+    def load(self, source: DocumentSource) -> list[DocumentChunk]:
+        return self.ingest(source)
+
+
+class VectorStoreManager:
+    """Own the embedding client and vector database used by RAG."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        embeddings: EmbeddingProvider,
+        vector_index: VectorIndex | None = None,
+    ) -> None:
+        self.settings = settings
+        self.embeddings = embeddings
+        self.db = vector_index or ChromaVectorIndex(
+            embeddings,
+            settings.vector_dir,
+            settings.vector_collection,
+        )
+
+    def add(self, chunks: Iterable[DocumentChunk]) -> None:
+        self.db.add(chunks)
+
+    def replace_document(
+        self, document_id: str, chunks: Iterable[DocumentChunk]
+    ) -> None:
+        self.db.replace_document(document_id, chunks)
+
+    def remove_document(self, document_id: str) -> None:
+        self.db.remove_document(document_id)
+
+    def search(
+        self,
+        query: str,
+        document_ids: set[str] | None = None,
+        limit: int = 3,
+    ) -> list[RetrievedChunk]:
+        return self.db.search(query, document_ids, limit)
+
+    def list_source_metadata(self) -> tuple[dict[str, object], ...]:
+        return self.db.list_source_metadata()
+
+
+class LLMDebugger:
+    """Own the configured chat client and grounded tutoring prompts."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        chat_client: ChatProvider,
+        vector_store: VectorStoreManager,
+    ) -> None:
+        self.settings = settings
+        self.client = chat_client
+        self.vector_store = vector_store
+        self.tutor = TutorService(
+            chat_client,
+            vector_store,
+            settings.retrieval_limit,
+            settings.retrieval_min_score,
+            settings.retrieval_context_tokens,
+            settings.conversation_context_tokens,
+        )
+
+    def execute_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        return self.client.complete(system_prompt, user_prompt)
+
+    def answer(
+        self,
+        query: str,
+        mode: AssistantMode,
+        document_ids: set[str],
+        history: list[ChatMessage] | None = None,
+    ) -> TutorResponse:
+        return self.tutor.answer(query, mode, document_ids, history)
+
+    def next_hint(
+        self,
+        problem: str,
+        history: list[ChatMessage],
+        previous_hints: list[str],
+    ) -> HintProgress:
+        return self.tutor.next_hint(problem, history, previous_hints)
+
+
+class PyDebuggerApp:
+    """Composition root linking documents, vectors, LLMs, jobs, and execution."""
+
     _YOUTUBE_JOB_MEDIA_TYPE = "application/x-pydebugger-youtube-reference"
 
     def __init__(
@@ -85,20 +186,24 @@ class PyDebuggerEngine:
         )
         raw_chat = chat_provider or default_chat
         raw_embeddings = embedding_provider or default_embeddings
+        if raw_chat is None or raw_embeddings is None:
+            raise RuntimeError("Chat and embedding providers must be configured")
         chat_provider = MonitoredChatProvider(raw_chat, self.monitor)
         embedding_provider = MonitoredEmbeddingProvider(raw_embeddings, self.monitor)
-        self.ingestor = DocumentIngestor()
-        self.index = vector_index or ChromaVectorIndex(
+        self.document_processor = DocumentProcessor(settings)
+        self.ingestor = self.document_processor
+        self.vector_store = VectorStoreManager(
+            settings,
             embedding_provider,
-            settings.vector_dir,
-            settings.vector_collection,
+            vector_index,
         )
-        self.tutor = TutorService(
+        self.index = self.vector_store
+        self.llm_debugger = LLMDebugger(
+            settings,
             chat_provider,
-            self.index,
-            settings.retrieval_limit,
-            settings.retrieval_min_score,
+            self.vector_store,
         )
+        self.tutor = self.llm_debugger
         self.executor = executor or self._build_executor(settings)
         self.executor.validate_runtime()
         self.execution = ExecutionService(
@@ -157,11 +262,11 @@ class PyDebuggerEngine:
         if not data:
             raise IngestionError("The uploaded document is empty")
         if len(data) > self.settings.upload_limit_bytes:
-            raise IngestionError("The uploaded document exceeds the configured size limit")
+            raise IngestionError(
+                "The uploaded document exceeds the configured size limit"
+            )
         safe_name = self._safe_filename(filename)
-        media_type = self.ingestor.validate_upload(
-            safe_name, data, declared_media_type
-        )
+        media_type = self.ingestor.validate_upload(safe_name, data, declared_media_type)
         self._check_ingestion_control(_deadline, _cancel_event)
         report(0.15, "Preparing document revision")
         source_key = f"upload:{safe_name.casefold()}"
@@ -281,7 +386,9 @@ class PyDebuggerEngine:
         if not transcript_data:
             raise IngestionError("The video transcript is empty")
         if len(transcript_data) > self.settings.upload_limit_bytes:
-            raise IngestionError("The video transcript exceeds the configured size limit")
+            raise IngestionError(
+                "The video transcript exceeds the configured size limit"
+            )
 
         source_key = f"youtube:{video_id}"
         document_id = self._stable_id("youtube", source_key)
@@ -393,7 +500,10 @@ class PyDebuggerEngine:
         return self._observe(
             "tutor.answer",
             answer_selected,
-            {"selected_documents": len(document_ids), "history_messages": len(history or [])},
+            {
+                "selected_documents": len(document_ids),
+                "history_messages": len(history or []),
+            },
         )
 
     def monitoring_summary(
@@ -423,6 +533,19 @@ class PyDebuggerEngine:
 
     def start_execution(self, source: str) -> ExecutionJob:
         return self.execution.submit(source)
+
+    def start_project_execution(
+        self,
+        files: dict[str, str],
+        entrypoint: str,
+        tests: list[ExecutionTestCase] | None = None,
+    ) -> ExecutionJob:
+        project = ExecutionProject(
+            files=tuple(ProjectFile(path, source) for path, source in files.items()),
+            entrypoint=entrypoint,
+            tests=tuple(tests or ()),
+        )
+        return self.execution.submit_project(project)
 
     def get_execution(self, execution_id: str) -> ExecutionJob:
         return self.execution.get(execution_id)
@@ -456,7 +579,9 @@ class PyDebuggerEngine:
         for metadata in self.index.list_source_metadata():
             source_id = str(metadata.get("source_id") or "")
             stored_filename = str(metadata.get("stored_filename") or "")
-            source_name = str(metadata.get("source_name") or metadata.get("source") or "")
+            source_name = str(
+                metadata.get("source_name") or metadata.get("source") or ""
+            )
             if not source_id or not stored_filename or not source_name:
                 continue
             path = self.settings.data_dir / "uploads" / source_id / stored_filename
@@ -466,7 +591,9 @@ class PyDebuggerEngine:
                 id=source_id,
                 name=source_name,
                 path=path,
-                media_type=str(metadata.get("media_type") or "application/octet-stream"),
+                media_type=str(
+                    metadata.get("media_type") or "application/octet-stream"
+                ),
                 sha256=str(metadata.get("sha256") or ""),
                 index_version=str(metadata.get("index_version") or ""),
                 source_key=str(metadata.get("source_key") or source_id),
@@ -570,9 +697,9 @@ class PyDebuggerEngine:
     def _observe(
         self,
         operation: str,
-        function: Callable[[], "_ObservedResult"],
+        function: Callable[[], _ObservedResult],
         metadata: dict[str, object] | None = None,
-    ) -> "_ObservedResult":
+    ) -> _ObservedResult:
         started = time.perf_counter()
         try:
             result = function()
@@ -600,3 +727,5 @@ class PyDebuggerEngine:
 
 _ObservedResult = TypeVar("_ObservedResult")
 
+# Backward-compatible public name used by existing integrations.
+PyDebuggerEngine = PyDebuggerApp

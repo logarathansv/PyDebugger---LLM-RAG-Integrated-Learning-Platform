@@ -42,6 +42,7 @@ class AzureOpenAIChatProvider(ChatProvider):
             api_version=settings.azure_openai_api_version,
             azure_deployment=settings.azure_chat_deployment,
             temperature=0.2,
+            max_tokens=settings.llm_max_output_tokens,
             max_retries=3,
             timeout=30,
         )
@@ -107,6 +108,7 @@ class GoogleGeminiChatProvider(ChatProvider):
         self._client = ChatGoogleGenerativeAI(
             model=settings.google_chat_model,
             api_key=settings.google_api_key,
+            max_tokens=settings.llm_max_output_tokens,
             max_retries=3,
             timeout=30,
             vertexai=False,

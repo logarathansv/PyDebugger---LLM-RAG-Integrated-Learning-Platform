@@ -6,16 +6,16 @@ It never executes student code in the Streamlit/application process.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor
 import os
-from pathlib import Path
 import subprocess
 import tempfile
-from threading import BoundedSemaphore, Event, Lock, Thread
 import time
-from typing import BinaryIO, Protocol
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from threading import BoundedSemaphore, Event, Lock, Thread
+from typing import BinaryIO, Protocol
 
 from .config import ConfigurationError, Settings
 from .diagnostics import (
@@ -24,13 +24,22 @@ from .diagnostics import (
     format_traceback,
     remove_diagnostic_records,
 )
-from .models import ExecutionJob, ExecutionResult, ExecutionState
 from .jobs import JobQueueFullError
+from .models import (
+    ExecutionJob,
+    ExecutionProject,
+    ExecutionResult,
+    ExecutionState,
+    ExecutionTestResult,
+    ProjectFile,
+)
 from .monitoring import MonitoringStore, OperationMetric
 
 
 class CodeExecutor(Protocol):
-    def execute(self, source: str, execution_id: str) -> ExecutionResult: ...
+    def execute(
+        self, source: str | ExecutionProject, execution_id: str
+    ) -> ExecutionResult: ...
 
     def cancel(self, execution_id: str) -> bool: ...
 
@@ -41,7 +50,9 @@ class CodeExecutor(Protocol):
 class DisabledExecutor:
     reason: str = "Code execution is disabled by configuration."
 
-    def execute(self, source: str, execution_id: str) -> ExecutionResult:
+    def execute(
+        self, source: str | ExecutionProject, execution_id: str
+    ) -> ExecutionResult:
         return ExecutionResult(execution_id=execution_id, disabled_reason=self.reason)
 
     def cancel(self, execution_id: str) -> bool:
@@ -104,7 +115,7 @@ class DockerExecutionPolicy:
     tmpfs_mb: int
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "DockerExecutionPolicy":
+    def from_settings(cls, settings: Settings) -> DockerExecutionPolicy:
         return cls(
             docker_binary=settings.docker_binary,
             image=settings.docker_image,
@@ -150,30 +161,97 @@ class DockerCodeExecutor:
                 f"docker pull {self.policy.image}"
             )
 
-    def execute(self, source: str, execution_id: str) -> ExecutionResult:
+    def execute(
+        self, source: str | ExecutionProject, execution_id: str
+    ) -> ExecutionResult:
+        project = (
+            source
+            if isinstance(source, ExecutionProject)
+            else ExecutionProject(
+                (ProjectFile("submission.py", source),), "submission.py"
+            )
+        )
+        validation_error = self._validate_project(project)
+        if validation_error:
+            return ExecutionResult(
+                execution_id=execution_id,
+                stderr=validation_error,
+                exit_code=2,
+                resource_limit_exceeded="limit" in validation_error.lower(),
+            )
+        if not project.tests:
+            return self._execute_once(project, execution_id, "")
+
+        started = time.monotonic()
+        test_results: list[ExecutionTestResult] = []
+        first_failure: ExecutionResult | None = None
+        for test in project.tests:
+            result = self._execute_once(project, execution_id, test.stdin)
+            actual = result.stdout.replace("\r\n", "\n").rstrip()
+            expected = test.expected_output.replace("\r\n", "\n").rstrip()
+            passed = result.exit_code == 0 and actual == expected
+            test_results.append(
+                ExecutionTestResult(
+                    name=test.name,
+                    passed=passed,
+                    expected_output=test.expected_output,
+                    actual_output=result.stdout,
+                    stderr=result.stderr,
+                    exit_code=result.exit_code,
+                    duration_seconds=result.duration_seconds,
+                    diagnostic=result.diagnostic,
+                )
+            )
+            if not passed and first_failure is None:
+                first_failure = result
+            if result.cancelled or result.timed_out or result.resource_limit_exceeded:
+                break
+
+        failed_runtime = bool(
+            first_failure and first_failure.exit_code not in {None, 0}
+        )
+        return ExecutionResult(
+            execution_id=execution_id,
+            stdout=first_failure.stdout if first_failure else "",
+            stderr=first_failure.stderr if failed_runtime else "",
+            exit_code=first_failure.exit_code if failed_runtime else 0,
+            duration_seconds=time.monotonic() - started,
+            timed_out=bool(first_failure and first_failure.timed_out),
+            cancelled=bool(first_failure and first_failure.cancelled),
+            resource_limit_exceeded=bool(
+                first_failure and first_failure.resource_limit_exceeded
+            ),
+            truncated=bool(first_failure and first_failure.truncated),
+            diagnostic=first_failure.diagnostic if failed_runtime else None,
+            traceback=first_failure.traceback if failed_runtime else "",
+            test_results=tuple(test_results),
+        )
+
+    def _execute_once(
+        self, project: ExecutionProject, execution_id: str, stdin: str
+    ) -> ExecutionResult:
         with self._lock:
             if execution_id in self._cancelled:
                 self._cancelled.discard(execution_id)
                 return ExecutionResult(execution_id=execution_id, cancelled=True)
 
-        if len(source.encode("utf-8")) > self.policy.source_limit:
-            return ExecutionResult(
-                execution_id=execution_id,
-                stderr="Source exceeds the configured execution limit.",
-                exit_code=2,
-                resource_limit_exceeded=True,
-            )
-
         started = time.monotonic()
         container_name = f"pydebugger-{execution_id}"
         with tempfile.TemporaryDirectory(prefix="pydebugger-run-") as temporary_dir:
-            script = Path(temporary_dir) / "submission.py"
-            script.write_text(source, encoding="utf-8")
-            command = self.build_command(script, container_name)
+            project_dir = Path(temporary_dir)
+            for project_file in project.files:
+                destination = project_dir.joinpath(
+                    *PurePosixPath(project_file.path).parts
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(project_file.source, encoding="utf-8")
+            command = self._build_command(
+                project_dir, container_name, project.entrypoint
+            )
             try:
                 process = subprocess.Popen(
                     command,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=self._docker_client_environment(),
@@ -191,6 +269,12 @@ class DockerCodeExecutor:
                 cancellation_requested = execution_id in self._cancelled
             if cancellation_requested:
                 self._stop(active)
+            if stdin and process.stdin is not None:
+                try:
+                    process.stdin.write(stdin.encode("utf-8"))
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
 
             output = _BoundedOutput(self.policy.output_limit)
             stdout_thread = Thread(
@@ -252,7 +336,9 @@ class DockerCodeExecutor:
                     f"Execution exceeded the {self.policy.output_limit} byte output limit.",
                 )
             if oom_killed:
-                stderr = self._append_message(stderr, "Execution exceeded its memory limit.")
+                stderr = self._append_message(
+                    stderr, "Execution exceeded its memory limit."
+                )
             if cancelled:
                 stderr = self._append_message(stderr, "Execution was cancelled.")
 
@@ -270,6 +356,50 @@ class DockerCodeExecutor:
                 traceback=format_traceback(diagnostic) if diagnostic else "",
             )
 
+    def _validate_project(self, project: ExecutionProject) -> str | None:
+        if not project.files:
+            return "Project must contain at least one Python file."
+        if len(project.files) > 20:
+            return "Project exceeds the 20-file execution limit."
+        if len(project.tests) > 10:
+            return "Project exceeds the 10-test execution limit."
+        seen: set[str] = set()
+        total_bytes = 0
+        for project_file in project.files:
+            path = PurePosixPath(project_file.path)
+            if (
+                path.is_absolute()
+                or not path.parts
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or path.suffix != ".py"
+                or any(
+                    not self._valid_path_part(part, index == len(path.parts) - 1)
+                    for index, part in enumerate(path.parts)
+                )
+            ):
+                return f"Unsafe Python project path: {project_file.path!r}."
+            normalized = path.as_posix()
+            if normalized in seen:
+                return f"Duplicate Python project path: {normalized}."
+            seen.add(normalized)
+            total_bytes += len(project_file.source.encode("utf-8"))
+        if project.entrypoint not in seen:
+            return "Project entry point must name one of the submitted Python files."
+        total_bytes += sum(
+            len(test.stdin.encode("utf-8")) + len(test.expected_output.encode("utf-8"))
+            for test in project.tests
+        )
+        if total_bytes > self.policy.source_limit:
+            return "Project source and test data exceed the configured execution limit."
+        if any(not test.name.strip() for test in project.tests):
+            return "Every test case must have a name."
+        return None
+
+    @staticmethod
+    def _valid_path_part(part: str, is_file: bool) -> bool:
+        candidate = part[:-3] if is_file else part
+        return bool(candidate) and candidate.isidentifier()
+
     def cancel(self, execution_id: str) -> bool:
         with self._lock:
             active = self._active.get(execution_id)
@@ -279,8 +409,14 @@ class DockerCodeExecutor:
         return True
 
     def build_command(self, script: Path, container_name: str) -> list[str]:
+        return self._build_command(script, container_name, "submission.py")
+
+    def _build_command(
+        self, source: Path, container_name: str, entrypoint: str
+    ) -> list[str]:
         memory = f"{self.policy.memory_mb}m"
-        mount = f"type=bind,src={script.resolve()},dst=/workspace/submission.py,readonly"
+        destination = "/workspace" if source.is_dir() else "/workspace/submission.py"
+        mount = f"type=bind,src={source.resolve()},dst={destination},readonly"
         command = [
             self.policy.docker_binary,
             "run",
@@ -317,6 +453,8 @@ class DockerCodeExecutor:
             "/workspace",
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            f"PYDEBUGGER_ENTRYPOINT={entrypoint}",
         ]
         if self.policy.runtime:
             command.extend(["--runtime", self.policy.runtime])
@@ -413,7 +551,7 @@ class ExecutionService:
         self._jobs: dict[str, _MutableJob] = {}
         self._lock = Lock()
 
-    def submit(self, source: str) -> ExecutionJob:
+    def submit(self, source: str | ExecutionProject) -> ExecutionJob:
         if not self._capacity.acquire(blocking=False):
             raise JobQueueFullError(
                 "The execution queue is full. Wait for a running submission to finish."
@@ -431,6 +569,9 @@ class ExecutionService:
                 self._jobs.pop(execution_id, None)
             raise
         return self.get(execution_id)
+
+    def submit_project(self, project: ExecutionProject) -> ExecutionJob:
+        return self.submit(project)
 
     def get(self, execution_id: str) -> ExecutionJob:
         with self._lock:
@@ -481,7 +622,7 @@ class ExecutionService:
     def shutdown(self, *, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait, cancel_futures=True)
 
-    def _run(self, execution_id: str, source: str) -> None:
+    def _run(self, execution_id: str, source: str | ExecutionProject) -> None:
         started = time.perf_counter()
         try:
             for attempt in range(1, self._max_attempts + 1):

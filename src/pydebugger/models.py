@@ -88,6 +88,26 @@ class HintProgress:
 
 
 @dataclass(frozen=True)
+class ProjectFile:
+    path: str
+    source: str
+
+
+@dataclass(frozen=True)
+class ExecutionTestCase:
+    name: str
+    stdin: str = ""
+    expected_output: str = ""
+
+
+@dataclass(frozen=True)
+class ExecutionProject:
+    files: tuple[ProjectFile, ...]
+    entrypoint: str = "main.py"
+    tests: tuple[ExecutionTestCase, ...] = ()
+
+
+@dataclass(frozen=True)
 class TracebackFrame:
     file_name: str
     line_number: int
@@ -99,12 +119,25 @@ class TracebackFrame:
 class PythonDiagnostic:
     exception_type: str
     message: str
+    file_name: str = "submission.py"
     line_number: int | None = None
     column_number: int | None = None
     end_line_number: int | None = None
     end_column_number: int | None = None
     source_line: str | None = None
     frames: tuple[TracebackFrame, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExecutionTestResult:
+    name: str
+    passed: bool
+    expected_output: str
+    actual_output: str
+    stderr: str = ""
+    exit_code: int | None = None
+    duration_seconds: float = 0.0
+    diagnostic: PythonDiagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +154,7 @@ class ExecutionResult:
     disabled_reason: str | None = None
     diagnostic: PythonDiagnostic | None = None
     traceback: str = ""
+    test_results: tuple[ExecutionTestResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,4 +181,3 @@ class IngestionJob:
     message: str = "Queued"
     attempt: int = 0
     max_attempts: int = 1
-

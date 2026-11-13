@@ -1648,6 +1648,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-pptx" },
     { name = "streamlit" },
+    { name = "streamlit-monaco-editor" },
     { name = "youtube-transcript-api" },
 ]
 
@@ -1668,6 +1669,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2,<2" },
     { name = "python-pptx", specifier = ">=1.0.2,<2" },
     { name = "streamlit", specifier = ">=1.67,<2" },
+    { name = "streamlit-monaco-editor", specifier = "==0.1.6" },
     { name = "youtube-transcript-api", specifier = ">=1.2.5,<2" },
 ]
 provides-extras = ["dev"]
@@ -1991,6 +1993,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/38/47/ea7596bda2d303370b6129688e09a44e5faa64e5b9d86cba4d89ae60a16f/streamlit-1.67.0.tar.gz", hash = "sha256:58159dae1199212250bfa5fbba0740996129003266c2c37d465151ef76c48f3b", size = 10672027, upload-time = "2026-11-05T19:53:54.821Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/58/c4/59f60e52e8f679488bf0caecbe3a8469af1d3d72c352bb0f306915a3e667/streamlit-1.67.0-py3-none-any.whl", hash = "sha256:f29da87c443bfbdfc52738616e3d65745d438e718da8faf69e2be0da1e52ce64", size = 11235773, upload-time = "2026-11-05T19:53:51.688Z" },
+]
+
+[[package]]
+name = "streamlit-monaco-editor"
+version = "0.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/1a/cd3545ebcbc8f07ffe7d84c0837a9fdda8ea0e7325d734c1e67e5484a32f/streamlit_monaco_editor-0.1.6.tar.gz", hash = "sha256:1e2b4d653ae237bc5aba60659bb21f631ec8a8e5a1a0cca6b579dbb860da96aa", size = 164999, upload-time = "2025-07-05T15:10:20.529Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/97/8c8a9831d2fe14e9407c432b91c9a9eea5c345b3745a2fdff27524ad38d6/streamlit_monaco_editor-0.1.6-py3-none-any.whl", hash = "sha256:2147dd8ceaade04e6ea5e53401a9d94abb5345891276a9196c293dccb4828bd0", size = 169724, upload-time = "2025-07-05T15:10:19.279Z" },
 ]
 
 [[package]]

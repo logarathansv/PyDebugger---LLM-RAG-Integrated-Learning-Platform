@@ -5,10 +5,16 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from typing import TypedDict
 
+from langchain_core.prompts import PromptTemplate
 from langgraph.graph import END, START, StateGraph
 
 from .models import ChatMessage, HintProgress
 from .providers import ChatProvider
+
+_HINT_PROMPT = PromptTemplate.from_template(
+    "{retry}Level {level}: {stage}\nProblem:\n{problem}\n\n"
+    "Relevant history:\n{conversation}\n\nEarlier hints:\n{prior}"
+)
 
 
 class HintState(TypedDict):
@@ -62,7 +68,9 @@ class HintWorkflow:
             {
                 "problem": cleaned_problem,
                 "conversation": conversation,
-                "previous_hints": tuple(item.strip() for item in previous_hints if item.strip()),
+                "previous_hints": tuple(
+                    item.strip() for item in previous_hints if item.strip()
+                ),
                 "level": 1,
                 "stage_instruction": "",
                 "hint": "",
@@ -87,13 +95,16 @@ class HintWorkflow:
             else ""
         )
         hint = self._chat.complete(
-            "You are a patient Python debugging tutor. Return exactly one concise hint. "
-            "Never reveal the complete solution and never repeat a prior hint.",
-            f"{retry}Hint level: {state['level']}\n"
-            f"Progression requirement: {state['stage_instruction']}\n\n"
-            f"Problem:\n{state['problem']}\n\n"
-            f"Relevant conversation:\n{state['conversation'] or 'None'}\n\n"
-            f"Earlier hints:\n{prior}",
+            "Give exactly one concise programming hint. Do not reveal the solution or "
+            "repeat an earlier hint.",
+            _HINT_PROMPT.format(
+                retry=retry,
+                level=state["level"],
+                stage=state["stage_instruction"],
+                problem=state["problem"],
+                conversation=state["conversation"] or "None",
+                prior=prior,
+            ),
         ).strip()
         return {"hint": hint, "attempts": state["attempts"] + 1}
 
@@ -101,7 +112,8 @@ class HintWorkflow:
     def _validate(state: HintState) -> dict[str, object]:
         normalized = " ".join(state["hint"].lower().split())
         duplicate = not normalized or any(
-            SequenceMatcher(None, normalized, " ".join(old.lower().split())).ratio() >= 0.82
+            SequenceMatcher(None, normalized, " ".join(old.lower().split())).ratio()
+            >= 0.82
             for old in state["previous_hints"]
         )
         return {"duplicate": duplicate}
