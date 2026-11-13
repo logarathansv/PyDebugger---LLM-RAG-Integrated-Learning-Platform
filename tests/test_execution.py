@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from threading import Event
-import time
 
 from pydebugger.execution import (
     DockerCodeExecutor,
     DockerExecutionPolicy,
     ExecutionService,
 )
-from pydebugger.models import ExecutionResult, ExecutionState
+from pydebugger.models import (
+    ExecutionProject,
+    ExecutionResult,
+    ExecutionState,
+    ExecutionTestCase,
+    ProjectFile,
+)
 
 
 def policy() -> DockerExecutionPolicy:
@@ -53,6 +59,45 @@ def test_docker_command_applies_isolation_and_resource_limits(tmp_path: Path):
         "-c",
     ]
     assert 'compile(source, filename, "exec")' in command[-1]
+
+
+def test_project_rejects_traversal_before_starting_docker():
+    project = ExecutionProject(
+        (ProjectFile("../escape.py", "print('unsafe')"),),
+        "../escape.py",
+    )
+
+    result = DockerCodeExecutor(policy()).execute(project, "unsafe-project")
+
+    assert result.exit_code == 2
+    assert "Unsafe Python project path" in result.stderr
+
+
+class StubProjectExecutor(DockerCodeExecutor):
+    def _execute_once(self, project, execution_id, stdin):
+        return ExecutionResult(
+            execution_id=execution_id,
+            stdout=f"value={stdin.strip()}\n",
+            exit_code=0,
+            duration_seconds=0.01,
+        )
+
+
+def test_project_returns_structured_test_results():
+    project = ExecutionProject(
+        (ProjectFile("main.py", "print(input())"),),
+        "main.py",
+        (
+            ExecutionTestCase("matching", "one\n", "value=one\n"),
+            ExecutionTestCase("different", "two\n", "value=three\n"),
+        ),
+    )
+
+    result = StubProjectExecutor(policy()).execute(project, "project-tests")
+
+    assert [item.passed for item in result.test_results] == [True, False]
+    assert result.test_results[1].actual_output == "value=two\n"
+    assert result.exit_code == 0
 
 
 class BlockingExecutor:

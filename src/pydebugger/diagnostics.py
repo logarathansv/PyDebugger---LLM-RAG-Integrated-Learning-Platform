@@ -7,19 +7,24 @@ from typing import Any
 
 from .models import PythonDiagnostic, TracebackFrame
 
-
 DIAGNOSTIC_PREFIX = "__PYDEBUGGER_DIAGNOSTIC_V1__"
 
 # This bootstrap is passed to ``python -c``. The student's source is compiled with
 # its real container filename, so its first line remains line 1. Only frames from
 # that filename are returned; the bootstrap itself never appears in learner traces.
-PYTHON_RUNNER = r'''
+PYTHON_RUNNER = r"""
 import json
 import linecache
+import os
 import sys
 import traceback
 
-filename = "/workspace/submission.py"
+workspace = os.path.realpath("/workspace")
+entrypoint = os.environ.get("PYDEBUGGER_ENTRYPOINT", "submission.py")
+filename = os.path.realpath(os.path.join(workspace, entrypoint))
+if os.path.commonpath((workspace, filename)) != workspace:
+    raise SystemExit("Invalid entry point")
+sys.path.insert(0, workspace)
 with open(filename, "r", encoding="utf-8-sig") as source_file:
     source = source_file.read()
 linecache.cache[filename] = (
@@ -46,10 +51,14 @@ except SystemExit:
 except BaseException as error:
     frames = []
     for frame in traceback.extract_tb(error.__traceback__):
-        if frame.filename == filename:
+        frame_path = os.path.realpath(frame.filename)
+        if (
+            os.path.isabs(frame.filename)
+            and os.path.commonpath((workspace, frame_path)) == workspace
+        ):
             frames.append(
                 {
-                    "file_name": "submission.py",
+                    "file_name": os.path.relpath(frame_path, workspace).replace(os.sep, "/"),
                     "line_number": frame.lineno,
                     "function_name": frame.name,
                     "source_line": frame.line,
@@ -57,6 +66,12 @@ except BaseException as error:
             )
 
     if isinstance(error, SyntaxError):
+        error_path = os.path.realpath(error.filename or filename)
+        file_name = (
+            os.path.relpath(error_path, workspace).replace(os.sep, "/")
+            if os.path.commonpath((workspace, error_path)) == workspace
+            else entrypoint
+        )
         message = error.msg
         line_number = error.lineno
         column_number = error.offset
@@ -64,6 +79,7 @@ except BaseException as error:
         end_column_number = error.end_offset
         source_line = error.text.rstrip("\r\n") if error.text else None
     else:
+        file_name = frames[-1]["file_name"] if frames else entrypoint
         try:
             message = str(error)
         except BaseException:
@@ -77,6 +93,7 @@ except BaseException as error:
     payload = {
         "exception_type": type(error).__name__,
         "message": message,
+        "file_name": file_name,
         "line_number": line_number,
         "column_number": column_number,
         "end_line_number": end_line_number,
@@ -90,7 +107,7 @@ except BaseException as error:
         flush=True,
     )
     raise SystemExit(1)
-'''.strip()
+""".strip()
 
 
 def extract_diagnostic(stderr_tail: str) -> PythonDiagnostic | None:
@@ -130,7 +147,7 @@ def format_traceback(diagnostic: PythonDiagnostic) -> str:
             if frame.source_line:
                 lines.append(f"    {frame.source_line.strip()}")
     elif diagnostic.line_number is not None:
-        lines.append(f'  File "submission.py", line {diagnostic.line_number}')
+        lines.append(f'  File "{diagnostic.file_name}", line {diagnostic.line_number}')
         if diagnostic.source_line:
             lines.append(f"    {diagnostic.source_line}")
             if diagnostic.column_number:
@@ -142,7 +159,9 @@ def format_traceback(diagnostic: PythonDiagnostic) -> str:
                     and diagnostic.end_column_number > diagnostic.column_number
                 ):
                     width = diagnostic.end_column_number - diagnostic.column_number
-                lines.append("    " + " " * len(source_prefix.expandtabs()) + "^" * width)
+                lines.append(
+                    "    " + " " * len(source_prefix.expandtabs()) + "^" * width
+                )
 
     summary = diagnostic.exception_type
     if diagnostic.message:
@@ -158,6 +177,7 @@ def _diagnostic_from_payload(payload: Any) -> PythonDiagnostic:
     return PythonDiagnostic(
         exception_type=_required_string(payload, "exception_type"),
         message=_optional_string(payload.get("message")) or "",
+        file_name=_optional_string(payload.get("file_name")) or "submission.py",
         line_number=_optional_positive_int(payload.get("line_number")),
         column_number=_optional_positive_int(payload.get("column_number")),
         end_line_number=_optional_positive_int(payload.get("end_line_number")),

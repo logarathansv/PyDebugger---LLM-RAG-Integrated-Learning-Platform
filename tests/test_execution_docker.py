@@ -12,8 +12,7 @@ from pydebugger.execution import (
     DockerExecutionPolicy,
     ExecutionService,
 )
-from pydebugger.models import ExecutionState
-
+from pydebugger.models import ExecutionProject, ExecutionState, ProjectFile
 
 IMAGE = (
     "python:3.13-slim-bookworm@sha256:"
@@ -134,6 +133,28 @@ def test_docker_executor_reports_complete_runtime_trace():
     ]
     assert "ZeroDivisionError: division by zero" in result.traceback
     assert "<string>" not in result.traceback
+    assert_no_execution_containers()
+
+
+def test_docker_executor_runs_multiple_files_and_reports_imported_file():
+    project = ExecutionProject(
+        (
+            ProjectFile("main.py", "from helpers import fail\nfail()\n"),
+            ProjectFile("helpers.py", "def fail():\n    return 1 / 0\n"),
+        ),
+        "main.py",
+    )
+
+    result = executor().execute(project, uuid.uuid4().hex)
+
+    assert result.exit_code == 1
+    assert result.diagnostic is not None
+    assert result.diagnostic.file_name == "helpers.py"
+    assert [frame.file_name for frame in result.diagnostic.frames] == [
+        "main.py",
+        "helpers.py",
+    ]
+    assert 'File "helpers.py", line 2' in result.traceback
     assert_no_execution_containers()
 
 

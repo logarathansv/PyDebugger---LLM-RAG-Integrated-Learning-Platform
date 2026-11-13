@@ -13,12 +13,18 @@ class AssistantMode(str, Enum):
     RUBBER_DUCK = "Rubber Duck Assistant"
 
 
-class ExecutionState(str, Enum):
+class JobState(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    RETRYING = "retrying"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+# Compatibility name retained for callers of the execution API.
+ExecutionState = JobState
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,8 @@ class DocumentSource:
     path: Path
     media_type: str
     sha256: str
+    index_version: str = ""
+    source_key: str | None = None
     source_type: str = "upload"
     origin_uri: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -53,6 +61,9 @@ class Citation:
     source_name: str
     excerpt: str
     location: str | None = None
+    chunk_id: str | None = None
+    score: float | None = None
+    source_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,35 @@ class ChatMessage:
 class TutorResponse:
     answer: str
     citations: tuple[Citation, ...] = ()
+    grounded: bool = True
+
+
+@dataclass(frozen=True)
+class HintProgress:
+    problem: str
+    level: int
+    hint: str
+    hints: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ProjectFile:
+    path: str
+    source: str
+
+
+@dataclass(frozen=True)
+class ExecutionTestCase:
+    name: str
+    stdin: str = ""
+    expected_output: str = ""
+
+
+@dataclass(frozen=True)
+class ExecutionProject:
+    files: tuple[ProjectFile, ...]
+    entrypoint: str = "main.py"
+    tests: tuple[ExecutionTestCase, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,12 +119,25 @@ class TracebackFrame:
 class PythonDiagnostic:
     exception_type: str
     message: str
+    file_name: str = "submission.py"
     line_number: int | None = None
     column_number: int | None = None
     end_line_number: int | None = None
     end_column_number: int | None = None
     source_line: str | None = None
     frames: tuple[TracebackFrame, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExecutionTestResult:
+    name: str
+    passed: bool
+    expected_output: str
+    actual_output: str
+    stderr: str = ""
+    exit_code: int | None = None
+    duration_seconds: float = 0.0
+    diagnostic: PythonDiagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +154,7 @@ class ExecutionResult:
     disabled_reason: str | None = None
     diagnostic: PythonDiagnostic | None = None
     traceback: str = ""
+    test_results: tuple[ExecutionTestResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -109,4 +163,21 @@ class ExecutionJob:
     state: ExecutionState
     result: ExecutionResult | None = None
     error: str | None = None
+    error_code: str | None = None
+    progress: float = 0.0
+    message: str = "Queued"
+    attempt: int = 0
+    max_attempts: int = 1
 
+
+@dataclass(frozen=True)
+class IngestionJob:
+    id: str
+    state: JobState
+    result: DocumentSource | None = None
+    error: str | None = None
+    error_code: str | None = None
+    progress: float = 0.0
+    message: str = "Queued"
+    attempt: int = 0
+    max_attempts: int = 1

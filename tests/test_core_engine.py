@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from pydebugger import AssistantMode, Settings
-from pydebugger.config import ExecutionBackend
+from pydebugger.config import AIProvider, ExecutionBackend
 from pydebugger.engine import PyDebuggerEngine
 from pydebugger.execution import DisabledExecutor
 from pydebugger.ingestion import DocumentIngestor
@@ -18,6 +18,10 @@ class FakeAIProvider:
     def __init__(self) -> None:
         self.last_system = ""
         self.last_user = ""
+
+    @property
+    def embedding_identity(self) -> str:
+        return "fake-embedding-v1"
 
     @staticmethod
     def _vector(text: str) -> list[float]:
@@ -39,6 +43,16 @@ class FakeAIProvider:
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
+        vector_dir=tmp_path / "vectors",
+        vector_collection="pydebugger-test-content",
+        ai_provider=AIProvider.AZURE_OPENAI,
+        google_api_key=None,
+        google_chat_model="gemini-test",
+        google_embedding_model="embedding-test",
+        monitoring_db_path=tmp_path / "monitoring.sqlite3",
+        chat_input_cost_per_million=1.0,
+        chat_output_cost_per_million=2.0,
+        embedding_cost_per_million=0.1,
         azure_openai_endpoint=None,
         azure_openai_api_key=None,
         azure_chat_deployment=None,
@@ -46,6 +60,7 @@ def make_settings(tmp_path: Path) -> Settings:
         azure_openai_api_version="test",
         execution_backend=ExecutionBackend.DISABLED,
         execution_timeout_seconds=0.2,
+        execution_max_attempts=2,
         execution_output_limit=10_000,
         execution_source_limit=100_000,
         execution_memory_mb=128,
@@ -56,7 +71,15 @@ def make_settings(tmp_path: Path) -> Settings:
         docker_image="python@example@sha256:test",
         docker_runtime=None,
         upload_limit_bytes=10_000,
+        background_workers=2,
+        background_queue_size=8,
+        ingestion_timeout_seconds=10,
+        ingestion_max_attempts=3,
         retrieval_limit=3,
+        retrieval_min_score=0.25,
+        retrieval_context_tokens=2_500,
+        conversation_context_tokens=750,
+        llm_max_output_tokens=600,
     )
 
 
@@ -132,6 +155,8 @@ def test_tutor_uses_history_and_returns_citations():
     )
 
     assert response.citations[0].source_name == "loops.txt"
+    assert response.citations[0].chunk_id == "a"
+    assert response.citations[0].score is not None
     assert "I am learning iteration" in provider.last_user
     assert "[1] loops.txt" in provider.last_user
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import os
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 
@@ -16,6 +17,11 @@ class ConfigurationError(ValueError):
 class ExecutionBackend(str, Enum):
     DISABLED = "disabled"
     DOCKER = "docker"
+
+
+class AIProvider(str, Enum):
+    AZURE_OPENAI = "azure_openai"
+    GEMINI = "gemini"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -49,9 +55,31 @@ def _env_backend() -> ExecutionBackend:
         ) from error
 
 
+def _env_ai_provider() -> AIProvider:
+    default = "gemini" if os.getenv("GOOGLE_API_KEY") else "azure_openai"
+    value = os.getenv("PYDEBUGGER_AI_PROVIDER", default).strip().lower()
+    try:
+        return AIProvider(value)
+    except ValueError as error:
+        choices = ", ".join(item.value for item in AIProvider)
+        raise ConfigurationError(
+            f"PYDEBUGGER_AI_PROVIDER must be one of: {choices}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
+    vector_dir: Path
+    vector_collection: str
+    ai_provider: AIProvider
+    google_api_key: str | None = field(repr=False)
+    google_chat_model: str
+    google_embedding_model: str
+    monitoring_db_path: Path
+    chat_input_cost_per_million: float
+    chat_output_cost_per_million: float
+    embedding_cost_per_million: float
     azure_openai_endpoint: str | None
     azure_openai_api_key: str | None = field(repr=False)
     azure_chat_deployment: str | None
@@ -59,6 +87,7 @@ class Settings:
     azure_openai_api_version: str
     execution_backend: ExecutionBackend
     execution_timeout_seconds: float
+    execution_max_attempts: int
     execution_output_limit: int
     execution_source_limit: int
     execution_memory_mb: int
@@ -69,7 +98,15 @@ class Settings:
     docker_image: str
     docker_runtime: str | None
     upload_limit_bytes: int
+    background_workers: int
+    background_queue_size: int
+    ingestion_timeout_seconds: float
+    ingestion_max_attempts: int
     retrieval_limit: int
+    retrieval_min_score: float
+    retrieval_context_tokens: int
+    conversation_context_tokens: int
+    llm_max_output_tokens: int
 
     @classmethod
     def from_env(
@@ -84,8 +121,42 @@ class Settings:
         )
         if not data_dir.is_absolute():
             data_dir = project_root / data_dir
+        vector_dir = Path(
+            os.getenv("PYDEBUGGER_VECTOR_DIR", str(data_dir / "chroma"))
+        )
+        if not vector_dir.is_absolute():
+            vector_dir = project_root / vector_dir
+        monitoring_db_path = Path(
+            os.getenv(
+                "PYDEBUGGER_MONITORING_DB", str(data_dir / "monitoring.sqlite3")
+            )
+        )
+        if not monitoring_db_path.is_absolute():
+            monitoring_db_path = project_root / monitoring_db_path
         settings = cls(
             data_dir=data_dir.resolve(),
+            vector_dir=vector_dir.resolve(),
+            vector_collection=os.getenv(
+                "PYDEBUGGER_VECTOR_COLLECTION", "pydebugger-course-content"
+            ).strip(),
+            ai_provider=_env_ai_provider(),
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_chat_model=os.getenv(
+                "GOOGLE_CHAT_MODEL", "gemini-3.5-flash-lite"
+            ).strip(),
+            google_embedding_model=os.getenv(
+                "GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001"
+            ).strip(),
+            monitoring_db_path=monitoring_db_path.resolve(),
+            chat_input_cost_per_million=_env_float(
+                "PYDEBUGGER_CHAT_INPUT_COST_PER_MILLION", 0.0
+            ),
+            chat_output_cost_per_million=_env_float(
+                "PYDEBUGGER_CHAT_OUTPUT_COST_PER_MILLION", 0.0
+            ),
+            embedding_cost_per_million=_env_float(
+                "PYDEBUGGER_EMBEDDING_COST_PER_MILLION", 0.0
+            ),
             azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             azure_chat_deployment=os.getenv("AZURE_CHAT_DEPLOYMENT"),
@@ -97,6 +168,7 @@ class Settings:
             execution_timeout_seconds=_env_float(
                 "PYDEBUGGER_EXECUTION_TIMEOUT_SECONDS", 5.0
             ),
+            execution_max_attempts=_env_int("PYDEBUGGER_EXECUTION_MAX_ATTEMPTS", 2),
             execution_output_limit=_env_int(
                 "PYDEBUGGER_EXECUTION_OUTPUT_LIMIT", 20_000
             ),
@@ -117,7 +189,23 @@ class Settings:
             upload_limit_bytes=_env_int(
                 "PYDEBUGGER_UPLOAD_LIMIT_BYTES", 10 * 1024 * 1024
             ),
-            retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 5),
+            background_workers=_env_int("PYDEBUGGER_BACKGROUND_WORKERS", 2),
+            background_queue_size=_env_int("PYDEBUGGER_BACKGROUND_QUEUE_SIZE", 8),
+            ingestion_timeout_seconds=_env_float(
+                "PYDEBUGGER_INGESTION_TIMEOUT_SECONDS", 120.0
+            ),
+            ingestion_max_attempts=_env_int("PYDEBUGGER_INGESTION_MAX_ATTEMPTS", 3),
+            retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 3),
+            retrieval_min_score=_env_float("PYDEBUGGER_RETRIEVAL_MIN_SCORE", 0.25),
+            retrieval_context_tokens=_env_int(
+                "PYDEBUGGER_RETRIEVAL_CONTEXT_TOKENS", 2_500
+            ),
+            conversation_context_tokens=_env_int(
+                "PYDEBUGGER_CONVERSATION_CONTEXT_TOKENS", 750
+            ),
+            llm_max_output_tokens=_env_int(
+                "PYDEBUGGER_LLM_MAX_OUTPUT_TOKENS", 600
+            ),
         )
         settings.validate(require_ai=require_ai)
         return settings
@@ -128,16 +216,85 @@ class Settings:
             errors.extend(self._validate_ai())
         if self.data_dir.exists() and not self.data_dir.is_dir():
             errors.append("PYDEBUGGER_DATA_DIR must point to a directory")
+        if self.vector_dir.exists() and not self.vector_dir.is_dir():
+            errors.append("PYDEBUGGER_VECTOR_DIR must point to a directory")
+        if self.monitoring_db_path.exists() and not self.monitoring_db_path.is_file():
+            errors.append("PYDEBUGGER_MONITORING_DB must point to a file")
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9]",
+            self.vector_collection,
+        ):
+            errors.append(
+                "PYDEBUGGER_VECTOR_COLLECTION must be 3-63 letters, numbers, dots, "
+                "underscores, or hyphens and start/end with a letter or number"
+            )
         self._check_range(
             errors, "PYDEBUGGER_UPLOAD_LIMIT_BYTES", self.upload_limit_bytes, 1, 100_000_000
         )
+        self._check_range(
+            errors, "PYDEBUGGER_BACKGROUND_WORKERS", self.background_workers, 1, 16
+        )
+        self._check_range(
+            errors, "PYDEBUGGER_BACKGROUND_QUEUE_SIZE", self.background_queue_size, 0, 100
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_INGESTION_TIMEOUT_SECONDS",
+            self.ingestion_timeout_seconds,
+            5.0,
+            600.0,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_INGESTION_MAX_ATTEMPTS",
+            self.ingestion_max_attempts,
+            1,
+            5,
+        )
         self._check_range(errors, "PYDEBUGGER_RETRIEVAL_LIMIT", self.retrieval_limit, 1, 20)
+        self._check_range(
+            errors, "PYDEBUGGER_RETRIEVAL_MIN_SCORE", self.retrieval_min_score, 0.0, 1.0
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_RETRIEVAL_CONTEXT_TOKENS",
+            self.retrieval_context_tokens,
+            256,
+            16_000,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_CONVERSATION_CONTEXT_TOKENS",
+            self.conversation_context_tokens,
+            128,
+            4_000,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_LLM_MAX_OUTPUT_TOKENS",
+            self.llm_max_output_tokens,
+            64,
+            4_000,
+        )
+        for name, value in (
+            ("PYDEBUGGER_CHAT_INPUT_COST_PER_MILLION", self.chat_input_cost_per_million),
+            ("PYDEBUGGER_CHAT_OUTPUT_COST_PER_MILLION", self.chat_output_cost_per_million),
+            ("PYDEBUGGER_EMBEDDING_COST_PER_MILLION", self.embedding_cost_per_million),
+        ):
+            self._check_range(errors, name, value, 0.0, 10_000.0)
         self._check_range(
             errors,
             "PYDEBUGGER_EXECUTION_TIMEOUT_SECONDS",
             self.execution_timeout_seconds,
             0.1,
             30.0,
+        )
+        self._check_range(
+            errors,
+            "PYDEBUGGER_EXECUTION_MAX_ATTEMPTS",
+            self.execution_max_attempts,
+            1,
+            3,
         )
         self._check_range(
             errors,
@@ -177,6 +334,14 @@ class Settings:
 
     def _validate_ai(self) -> list[str]:
         errors: list[str] = []
+        if self.ai_provider is AIProvider.GEMINI:
+            if not self.google_api_key or self.google_api_key.strip().startswith("<"):
+                errors.append("GOOGLE_API_KEY is required and cannot be a placeholder")
+            if not self.google_chat_model:
+                errors.append("GOOGLE_CHAT_MODEL cannot be empty")
+            if not self.google_embedding_model:
+                errors.append("GOOGLE_EMBEDDING_MODEL cannot be empty")
+            return errors
         required = (
             ("AZURE_OPENAI_ENDPOINT", self.azure_openai_endpoint),
             ("AZURE_OPENAI_API_KEY", self.azure_openai_api_key),

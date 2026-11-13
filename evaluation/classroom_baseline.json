@@ -1,0 +1,38 @@
+{
+  "minimum_pass_rate": 0.8,
+  "documents": [
+    {
+      "filename": "loops.txt",
+      "media_type": "text/plain",
+      "content": "A Python for loop iterates over each item in an iterable. The break statement exits the nearest loop early."
+    },
+    {
+      "filename": "exceptions.txt",
+      "media_type": "text/plain",
+      "content": "A try block contains code that may fail. An except clause handles a matching exception such as ValueError."
+    }
+  ],
+  "cases": [
+    {
+      "id": "loop-break",
+      "question": "How do I stop a loop early?",
+      "expected_source": "loops.txt",
+      "expected_grounded": true,
+      "required_answer_terms": ["break"]
+    },
+    {
+      "id": "value-error",
+      "question": "Where should I handle ValueError?",
+      "expected_source": "exceptions.txt",
+      "expected_grounded": true,
+      "required_answer_terms": ["except"]
+    },
+    {
+      "id": "unsupported-topic",
+      "question": "Explain database sharding strategies.",
+      "expected_source": null,
+      "expected_grounded": false,
+      "required_answer_terms": ["supporting evidence"]
+    }
+  ]
+}
