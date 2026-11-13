@@ -11,6 +11,8 @@ from pydebugger.config import ConfigurationError, ExecutionBackend, Settings
 def valid_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
+        vector_dir=tmp_path / "vectors",
+        vector_collection="pydebugger-test-content",
         azure_openai_endpoint="https://example.openai.azure.com/",
         azure_openai_api_key="test-key",
         azure_chat_deployment="chat",
@@ -29,6 +31,7 @@ def valid_settings(tmp_path: Path) -> Settings:
         docker_runtime=None,
         upload_limit_bytes=10_000,
         retrieval_limit=5,
+        retrieval_min_score=0.25,
     )
 
 

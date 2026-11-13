@@ -15,13 +15,15 @@ The backend is split into modules with narrow responsibilities:
 - `ingestion.py` — safe document extraction and chunking
 - `youtube.py` — validated video references and transcript-provider adapter
 - `retrieval.py` — vector indexing and corpus-wide ranking
+- `hints.py` — LangGraph hint progression and duplicate prevention
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
 - `execution.py` — asynchronous, cancellable Docker execution jobs
 - `engine.py` — the single composition root used by the application
 
-The current vector index is intentionally in memory for the first consolidation
-milestone. Durable storage, authentication, course ownership, and permissions
-can be added later behind these service boundaries.
+The supported vector backend is a local persistent Chroma collection. It records
+the embedding identity and index schema, ranks matches across all selected
+documents in one query, and returns stable chunk IDs and relevance scores for
+traceable citations. The in-memory index exists only as a test double.
 
 Uploads support validated PDF, UTF-8 text, CSV, PPTX, Markdown, and restricted
 reStructuredText. Chunks retain file hashes, media types, page/slide/row or
@@ -88,16 +90,25 @@ The tests use fake AI providers, so they do not consume API credits.
 
 1. `PyDebuggerEngine.add_document()` validates and stores the upload.
 2. `DocumentIngestor` extracts text and preserves source locations.
-3. `InMemoryVectorIndex` embeds chunks and ranks matches across all selected files.
-4. `TutorService` builds a bounded prompt with conversation history and citations.
+3. `ChromaVectorIndex` persists chunks and ranks matches across all selected files.
+4. `TutorService` selects relevant history, enforces an evidence threshold, and
+   builds citations. Unsupported questions do not call the chat model.
 5. The configured `ChatProvider` generates the response.
+
+Uploading the same normalized filename replaces that logical document. Its ID
+stays stable, while its SHA-256 content hash and chunk index version change.
+New chunks are indexed before obsolete chunks and files are removed; failed
+replacement leaves the previous revision available. Deletion clears both the
+vector records and the document's bounded storage directory.
 
 Supported uploads are PDF, TXT, Markdown, reStructuredText, CSV, and PPTX.
 reStructuredText raw directives and external file insertion are disabled.
 
 ## Current milestone boundaries
 
-- The document catalog and vector index live for the current app session only.
+- Document files, catalog metadata, and vectors persist locally across restarts.
+- Local Chroma is intended for a single application instance; multi-node
+  deployment will require a shared vector service behind the same interface.
 - Azure OpenAI is the supported provider adapter.
 - Code execution is off unless the Docker backend and pinned image pass startup checks.
 - Authentication, courses, enrollment, durable student history, assignments,

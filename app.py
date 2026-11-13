@@ -127,11 +127,42 @@ with chat_tab:
                     with st.expander("Sources used"):
                         for citation in response.citations:
                             location = f" — {citation.location}" if citation.location else ""
-                            st.markdown(f"**{citation.source_name}{location}**")
+                            source_label = citation.source_name
+                            if citation.source_uri:
+                                source_label = f"[{source_label}]({citation.source_uri})"
+                            st.markdown(f"**{source_label}{location}**")
                             st.caption(citation.excerpt)
+                            trace = f"Chunk: {citation.chunk_id or 'unknown'}"
+                            if citation.score is not None:
+                                trace += f" · Relevance: {citation.score:.3f}"
+                            st.caption(trace)
                 st.session_state.messages.append(ChatMessage("assistant", response.answer))
             except Exception as error:
                 st.error(str(error))
+
+    st.divider()
+    st.subheader("Progressive hints")
+    hint_problem = st.text_area(
+        "Problem or code you are working on",
+        key="hint_problem",
+        height=140,
+    )
+    if st.session_state.get("hint_problem_key") != hint_problem.strip():
+        st.session_state.hint_problem_key = hint_problem.strip()
+        st.session_state.hints = []
+    for number, hint in enumerate(st.session_state.get("hints", []), start=1):
+        st.info(f"Hint {number}: {hint}")
+    if st.button("Get next hint", disabled=not hint_problem.strip()):
+        try:
+            progress = engine.next_hint(
+                hint_problem,
+                list(st.session_state.messages),
+                list(st.session_state.get("hints", [])),
+            )
+            st.session_state.hints = list(progress.hints)
+            st.rerun()
+        except Exception as error:
+            st.error(f"Could not generate a hint: {error}")
 
 with runner_tab:
     st.caption(

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import os
 from pathlib import Path
+import re
 from urllib.parse import urlparse
 
 
@@ -52,6 +53,8 @@ def _env_backend() -> ExecutionBackend:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
+    vector_dir: Path
+    vector_collection: str
     azure_openai_endpoint: str | None
     azure_openai_api_key: str | None = field(repr=False)
     azure_chat_deployment: str | None
@@ -70,6 +73,7 @@ class Settings:
     docker_runtime: str | None
     upload_limit_bytes: int
     retrieval_limit: int
+    retrieval_min_score: float
 
     @classmethod
     def from_env(
@@ -84,8 +88,17 @@ class Settings:
         )
         if not data_dir.is_absolute():
             data_dir = project_root / data_dir
+        vector_dir = Path(
+            os.getenv("PYDEBUGGER_VECTOR_DIR", str(data_dir / "chroma"))
+        )
+        if not vector_dir.is_absolute():
+            vector_dir = project_root / vector_dir
         settings = cls(
             data_dir=data_dir.resolve(),
+            vector_dir=vector_dir.resolve(),
+            vector_collection=os.getenv(
+                "PYDEBUGGER_VECTOR_COLLECTION", "pydebugger-course-content"
+            ).strip(),
             azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             azure_chat_deployment=os.getenv("AZURE_CHAT_DEPLOYMENT"),
@@ -118,6 +131,7 @@ class Settings:
                 "PYDEBUGGER_UPLOAD_LIMIT_BYTES", 10 * 1024 * 1024
             ),
             retrieval_limit=_env_int("PYDEBUGGER_RETRIEVAL_LIMIT", 5),
+            retrieval_min_score=_env_float("PYDEBUGGER_RETRIEVAL_MIN_SCORE", 0.25),
         )
         settings.validate(require_ai=require_ai)
         return settings
@@ -128,10 +142,23 @@ class Settings:
             errors.extend(self._validate_ai())
         if self.data_dir.exists() and not self.data_dir.is_dir():
             errors.append("PYDEBUGGER_DATA_DIR must point to a directory")
+        if self.vector_dir.exists() and not self.vector_dir.is_dir():
+            errors.append("PYDEBUGGER_VECTOR_DIR must point to a directory")
+        if not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9]",
+            self.vector_collection,
+        ):
+            errors.append(
+                "PYDEBUGGER_VECTOR_COLLECTION must be 3-63 letters, numbers, dots, "
+                "underscores, or hyphens and start/end with a letter or number"
+            )
         self._check_range(
             errors, "PYDEBUGGER_UPLOAD_LIMIT_BYTES", self.upload_limit_bytes, 1, 100_000_000
         )
         self._check_range(errors, "PYDEBUGGER_RETRIEVAL_LIMIT", self.retrieval_limit, 1, 20)
+        self._check_range(
+            errors, "PYDEBUGGER_RETRIEVAL_MIN_SCORE", self.retrieval_min_score, 0.0, 1.0
+        )
         self._check_range(
             errors,
             "PYDEBUGGER_EXECUTION_TIMEOUT_SECONDS",

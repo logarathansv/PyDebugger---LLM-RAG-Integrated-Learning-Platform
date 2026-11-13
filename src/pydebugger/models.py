@@ -28,6 +28,8 @@ class DocumentSource:
     path: Path
     media_type: str
     sha256: str
+    index_version: str = ""
+    source_key: str | None = None
     source_type: str = "upload"
     origin_uri: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -53,6 +55,9 @@ class Citation:
     source_name: str
     excerpt: str
     location: str | None = None
+    chunk_id: str | None = None
+    score: float | None = None
+    source_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,15 @@ class ChatMessage:
 class TutorResponse:
     answer: str
     citations: tuple[Citation, ...] = ()
+    grounded: bool = True
+
+
+@dataclass(frozen=True)
+class HintProgress:
+    problem: str
+    level: int
+    hint: str
+    hints: tuple[str, ...]
 
 
 @dataclass(frozen=True)

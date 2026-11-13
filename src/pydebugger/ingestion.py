@@ -33,6 +33,7 @@ class ChunkText:
 
 
 class DocumentIngestor:
+    INDEX_SCHEMA_VERSION = "chunks-v2"
     SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md", ".rst", ".csv", ".pptx"}
     MEDIA_TYPES = {
         ".pdf": "application/pdf",
@@ -183,6 +184,9 @@ class DocumentIngestor:
                     "origin_uri": source.origin_uri,
                     "media_type": source.media_type,
                     "sha256": source.sha256,
+                    "source_key": source.source_key or source.id,
+                    "index_version": source.index_version,
+                    "index_schema_version": self.INDEX_SCHEMA_VERSION,
                     "location": location,
                     "section": section_index,
                     "chunk": chunk_index,
@@ -193,7 +197,10 @@ class DocumentIngestor:
                 }
                 chunks.append(
                     DocumentChunk(
-                        id=f"{source.id}:{section_index}:{chunk_index}",
+                        id=(
+                            f"{source.id}:{source.index_version or self.INDEX_SCHEMA_VERSION}:"
+                            f"{section_index}:{chunk_index}"
+                        ),
                         document_id=source.id,
                         text=chunk.text,
                         metadata=metadata,

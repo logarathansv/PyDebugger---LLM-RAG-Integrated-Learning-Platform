@@ -19,6 +19,10 @@ class FakeAIProvider:
         self.last_system = ""
         self.last_user = ""
 
+    @property
+    def embedding_identity(self) -> str:
+        return "fake-embedding-v1"
+
     @staticmethod
     def _vector(text: str) -> list[float]:
         lowered = text.lower()
@@ -39,6 +43,8 @@ class FakeAIProvider:
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
+        vector_dir=tmp_path / "vectors",
+        vector_collection="pydebugger-test-content",
         azure_openai_endpoint=None,
         azure_openai_api_key=None,
         azure_chat_deployment=None,
@@ -57,6 +63,7 @@ def make_settings(tmp_path: Path) -> Settings:
         docker_runtime=None,
         upload_limit_bytes=10_000,
         retrieval_limit=3,
+        retrieval_min_score=0.25,
     )
 
 
@@ -132,6 +139,8 @@ def test_tutor_uses_history_and_returns_citations():
     )
 
     assert response.citations[0].source_name == "loops.txt"
+    assert response.citations[0].chunk_id == "a"
+    assert response.citations[0].score is not None
     assert "I am learning iteration" in provider.last_user
     assert "[1] loops.txt" in provider.last_user
 
