@@ -10,7 +10,7 @@ import time
 from typing import Callable, TypeVar
 import uuid
 
-from .config import ExecutionBackend, Settings
+from .config import AIProvider, ExecutionBackend, Settings
 from .execution import (
     CodeExecutor,
     DisabledExecutor,
@@ -42,6 +42,8 @@ from .providers import (
     AzureOpenAIEmbeddingProvider,
     ChatProvider,
     EmbeddingProvider,
+    GoogleGeminiChatProvider,
+    GoogleGeminiEmbeddingProvider,
 )
 from .retrieval import (
     ChromaVectorIndex,
@@ -78,8 +80,11 @@ class PyDebuggerEngine:
             chat_output_cost_per_million=settings.chat_output_cost_per_million,
             embedding_cost_per_million=settings.embedding_cost_per_million,
         )
-        raw_chat = chat_provider or AzureOpenAIChatProvider(settings)
-        raw_embeddings = embedding_provider or AzureOpenAIEmbeddingProvider(settings)
+        default_chat, default_embeddings = self._build_ai_providers(
+            settings, chat_provider is None, embedding_provider is None
+        )
+        raw_chat = chat_provider or default_chat
+        raw_embeddings = embedding_provider or default_embeddings
         chat_provider = MonitoredChatProvider(raw_chat, self.monitor)
         embedding_provider = MonitoredEmbeddingProvider(raw_embeddings, self.monitor)
         self.ingestor = DocumentIngestor()
@@ -430,6 +435,22 @@ class PyDebuggerEngine:
         if settings.execution_backend is ExecutionBackend.DOCKER:
             return DockerCodeExecutor(DockerExecutionPolicy.from_settings(settings))
         return DisabledExecutor()
+
+    @staticmethod
+    def _build_ai_providers(
+        settings: Settings, need_chat: bool, need_embeddings: bool
+    ) -> tuple[ChatProvider | None, EmbeddingProvider | None]:
+        if not need_chat and not need_embeddings:
+            return None, None
+        if settings.ai_provider is AIProvider.GEMINI:
+            return (
+                GoogleGeminiChatProvider(settings) if need_chat else None,
+                GoogleGeminiEmbeddingProvider(settings) if need_embeddings else None,
+            )
+        return (
+            AzureOpenAIChatProvider(settings) if need_chat else None,
+            AzureOpenAIEmbeddingProvider(settings) if need_embeddings else None,
+        )
 
     def _restore_document_catalog(self) -> None:
         for metadata in self.index.list_source_metadata():

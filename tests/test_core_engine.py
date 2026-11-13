@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from pydebugger import AssistantMode, Settings
-from pydebugger.config import ExecutionBackend
+from pydebugger.config import AIProvider, ExecutionBackend
 from pydebugger.engine import PyDebuggerEngine
 from pydebugger.execution import DisabledExecutor
 from pydebugger.ingestion import DocumentIngestor
@@ -45,6 +45,10 @@ def make_settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         vector_dir=tmp_path / "vectors",
         vector_collection="pydebugger-test-content",
+        ai_provider=AIProvider.AZURE_OPENAI,
+        google_api_key=None,
+        google_chat_model="gemini-test",
+        google_embedding_model="embedding-test",
         monitoring_db_path=tmp_path / "monitoring.sqlite3",
         chat_input_cost_per_million=1.0,
         chat_output_cost_per_million=2.0,

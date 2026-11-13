@@ -61,9 +61,15 @@ Copy-Item .env.example .env
 uv run --locked streamlit run app.py
 ```
 
-Populate `.env` with an Azure OpenAI base endpoint, API key, chat deployment,
-and embedding deployment. The endpoint should be the resource base URL, not a
-deployment-specific request URL.
+Gemini through Google AI Studio is the default low-cost provider. Populate
+`.env` with `GOOGLE_API_KEY`, `GOOGLE_CHAT_MODEL`, and
+`GOOGLE_EMBEDDING_MODEL`. To use Azure instead, set
+`PYDEBUGGER_AI_PROVIDER="azure_openai"` and configure its endpoint, API key,
+chat deployment, and embedding deployment.
+
+The current Gemini defaults are `gemini-3.5-flash-lite` for tutoring and
+`gemini-embedding-001` for retrieval. Changing the embedding model requires a
+new `PYDEBUGGER_VECTOR_COLLECTION` name so incompatible vectors are never mixed.
 
 Configuration is validated before providers or storage are initialized. Invalid
 URLs, placeholders, numeric limits, mutable execution images, and unavailable
@@ -101,7 +107,7 @@ uv lock --check
 
 The tests use fake AI providers, so they do not consume API credits.
 
-To run the versioned baseline against the configured Azure deployments and the
+To run the versioned baseline against the configured AI provider and the
 real supported engine (this consumes model quota):
 
 ```powershell
@@ -135,7 +141,8 @@ reStructuredText raw directives and external file insertion are disabled.
 - Document files, catalog metadata, and vectors persist locally across restarts.
 - Local Chroma is intended for a single application instance; multi-node
   deployment will require a shared vector service behind the same interface.
-- Azure OpenAI is the supported provider adapter.
+- Gemini and Azure OpenAI are supported provider adapters; Gemini is the default
+  when `GOOGLE_API_KEY` is configured.
 - Code execution is off unless the Docker backend and pinned image pass startup checks.
 - Authentication, courses, enrollment, durable student history, assignments,
   and instructor dashboards are planned after the core engine is strengthened.

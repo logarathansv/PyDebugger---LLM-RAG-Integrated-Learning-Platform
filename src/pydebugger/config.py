@@ -19,6 +19,11 @@ class ExecutionBackend(str, Enum):
     DOCKER = "docker"
 
 
+class AIProvider(str, Enum):
+    AZURE_OPENAI = "azure_openai"
+    GEMINI = "gemini"
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
@@ -50,11 +55,27 @@ def _env_backend() -> ExecutionBackend:
         ) from error
 
 
+def _env_ai_provider() -> AIProvider:
+    default = "gemini" if os.getenv("GOOGLE_API_KEY") else "azure_openai"
+    value = os.getenv("PYDEBUGGER_AI_PROVIDER", default).strip().lower()
+    try:
+        return AIProvider(value)
+    except ValueError as error:
+        choices = ", ".join(item.value for item in AIProvider)
+        raise ConfigurationError(
+            f"PYDEBUGGER_AI_PROVIDER must be one of: {choices}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
     vector_dir: Path
     vector_collection: str
+    ai_provider: AIProvider
+    google_api_key: str | None = field(repr=False)
+    google_chat_model: str
+    google_embedding_model: str
     monitoring_db_path: Path
     chat_input_cost_per_million: float
     chat_output_cost_per_million: float
@@ -114,6 +135,14 @@ class Settings:
             vector_dir=vector_dir.resolve(),
             vector_collection=os.getenv(
                 "PYDEBUGGER_VECTOR_COLLECTION", "pydebugger-course-content"
+            ).strip(),
+            ai_provider=_env_ai_provider(),
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_chat_model=os.getenv(
+                "GOOGLE_CHAT_MODEL", "gemini-3.5-flash-lite"
+            ).strip(),
+            google_embedding_model=os.getenv(
+                "GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001"
             ).strip(),
             monitoring_db_path=monitoring_db_path.resolve(),
             chat_input_cost_per_million=_env_float(
@@ -272,6 +301,14 @@ class Settings:
 
     def _validate_ai(self) -> list[str]:
         errors: list[str] = []
+        if self.ai_provider is AIProvider.GEMINI:
+            if not self.google_api_key or self.google_api_key.strip().startswith("<"):
+                errors.append("GOOGLE_API_KEY is required and cannot be a placeholder")
+            if not self.google_chat_model:
+                errors.append("GOOGLE_CHAT_MODEL cannot be empty")
+            if not self.google_embedding_model:
+                errors.append("GOOGLE_EMBEDDING_MODEL cannot be empty")
+            return errors
         required = (
             ("AZURE_OPENAI_ENDPOINT", self.azure_openai_endpoint),
             ("AZURE_OPENAI_API_KEY", self.azure_openai_api_key),

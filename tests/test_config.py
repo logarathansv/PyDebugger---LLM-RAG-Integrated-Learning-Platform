@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pydebugger.config import ConfigurationError, ExecutionBackend, Settings
+from pydebugger.config import AIProvider, ConfigurationError, ExecutionBackend, Settings
 
 
 def valid_settings(tmp_path: Path) -> Settings:
@@ -13,6 +13,10 @@ def valid_settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         vector_dir=tmp_path / "vectors",
         vector_collection="pydebugger-test-content",
+        ai_provider=AIProvider.AZURE_OPENAI,
+        google_api_key=None,
+        google_chat_model="gemini-test",
+        google_embedding_model="embedding-test",
         monitoring_db_path=tmp_path / "monitoring.sqlite3",
         chat_input_cost_per_million=1.0,
         chat_output_cost_per_million=2.0,
@@ -84,4 +88,27 @@ def test_settings_reject_negative_model_cost(tmp_path: Path):
     settings = replace(valid_settings(tmp_path), chat_input_cost_per_million=-1)
 
     with pytest.raises(ConfigurationError, match="CHAT_INPUT_COST"):
+        settings.validate()
+
+
+def test_gemini_settings_require_key_but_not_azure(tmp_path: Path):
+    settings = replace(
+        valid_settings(tmp_path),
+        ai_provider=AIProvider.GEMINI,
+        google_api_key="google-test-key",
+        azure_openai_endpoint=None,
+        azure_openai_api_key=None,
+        azure_chat_deployment=None,
+        azure_embedding_deployment=None,
+    )
+
+    settings.validate()
+
+
+def test_gemini_settings_reject_missing_key(tmp_path: Path):
+    settings = replace(
+        valid_settings(tmp_path), ai_provider=AIProvider.GEMINI, google_api_key=None
+    )
+
+    with pytest.raises(ConfigurationError, match="GOOGLE_API_KEY"):
         settings.validate()
