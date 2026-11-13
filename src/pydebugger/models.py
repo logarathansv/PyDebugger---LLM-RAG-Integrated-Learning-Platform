@@ -28,6 +28,9 @@ class DocumentSource:
     path: Path
     media_type: str
     sha256: str
+    source_type: str = "upload"
+    origin_uri: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

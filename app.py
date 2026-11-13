@@ -56,12 +56,34 @@ with st.sidebar:
     if uploads and st.button("Index uploaded files"):
         for upload in uploads:
             try:
-                engine.add_document(upload.name, upload.getvalue())
+                engine.add_document(upload.name, upload.getvalue(), upload.type)
                 st.success(f"Indexed {upload.name}")
             except IngestionError as error:
                 st.error(f"{upload.name}: {error}")
             except Exception as error:
                 st.error(f"Could not index {upload.name}: {error}")
+
+    st.subheader("YouTube transcript")
+    youtube_reference = st.text_input(
+        "YouTube URL or video ID",
+        placeholder="https://www.youtube.com/watch?v=...",
+    )
+    transcript_languages = st.text_input(
+        "Preferred transcript languages",
+        value="en",
+        help="Comma-separated language codes in priority order, for example en,ta,hi.",
+    )
+    if st.button("Index YouTube transcript", disabled=not youtube_reference.strip()):
+        try:
+            languages = tuple(
+                item.strip() for item in transcript_languages.split(",") if item.strip()
+            )
+            source = engine.add_youtube_transcript(youtube_reference, languages)
+            st.success(f"Indexed {source.name}")
+        except IngestionError as error:
+            st.error(str(error))
+        except Exception as error:
+            st.error(f"Could not index the YouTube transcript: {error}")
 
     documents = engine.list_documents()
     selected_ids = {

@@ -13,6 +13,7 @@ The backend is split into modules with narrow responsibilities:
 - `config.py` — validated environment configuration
 - `providers.py` — AI chat and embedding provider adapters
 - `ingestion.py` — safe document extraction and chunking
+- `youtube.py` — validated video references and transcript-provider adapter
 - `retrieval.py` — vector indexing and corpus-wide ranking
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
 - `execution.py` — asynchronous, cancellable Docker execution jobs
@@ -21,6 +22,16 @@ The backend is split into modules with narrow responsibilities:
 The current vector index is intentionally in memory for the first consolidation
 milestone. Durable storage, authentication, course ownership, and permissions
 can be added later behind these service boundaries.
+
+Uploads support validated PDF, UTF-8 text, CSV, PPTX, Markdown, and restricted
+reStructuredText. Chunks retain file hashes, media types, page/slide/row or
+heading locations, line and character ranges, and source origin. YouTube URLs or
+video IDs can be indexed from available transcripts with timestamp and language
+metadata. Transcript availability depends on YouTube and may be blocked from
+some cloud-hosting IP ranges.
+
+The validation rules, parser limits, metadata contract, and transcript behavior
+are documented in `docs/INGESTION.md`.
 
 ## Run the supported application
 

@@ -95,7 +95,8 @@ def test_csv_ingestion_produces_document_chunks(tmp_path: Path):
 
     chunks = DocumentIngestor().ingest(source)
 
-    assert "TypeError | wrong type" in chunks[0].text
+    assert any(chunk.text == "TypeError | wrong type" for chunk in chunks)
+    assert chunks[1].metadata["row_number"] == 2
 
 
 def test_retrieval_ranks_across_documents():
