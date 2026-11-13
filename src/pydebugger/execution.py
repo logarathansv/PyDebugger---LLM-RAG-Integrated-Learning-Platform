@@ -26,6 +26,7 @@ from .diagnostics import (
 )
 from .models import ExecutionJob, ExecutionResult, ExecutionState
 from .jobs import JobQueueFullError
+from .monitoring import MonitoringStore, OperationMetric
 
 
 class CodeExecutor(Protocol):
@@ -400,9 +401,11 @@ class ExecutionService:
         workers: int = 2,
         queue_size: int = 8,
         max_attempts: int = 1,
+        monitor: MonitoringStore | None = None,
     ) -> None:
         self.executor = executor
         self._max_attempts = max_attempts
+        self._monitor = monitor
         self._pool = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="pydebugger-execution"
         )
@@ -479,6 +482,7 @@ class ExecutionService:
         self._pool.shutdown(wait=wait, cancel_futures=True)
 
     def _run(self, execution_id: str, source: str) -> None:
+        started = time.perf_counter()
         try:
             for attempt in range(1, self._max_attempts + 1):
                 with self._lock:
@@ -545,6 +549,21 @@ class ExecutionService:
                         return
         finally:
             self._capacity.release()
+            if self._monitor is not None:
+                with self._lock:
+                    job = self._jobs[execution_id]
+                    state = job.state
+                    error_code = job.error_code
+                    attempt = job.attempt
+                self._monitor.record(
+                    OperationMetric(
+                        "execution.background",
+                        "success" if state is ExecutionState.COMPLETED else "failure",
+                        (time.perf_counter() - started) * 1000,
+                        error_code=error_code,
+                        metadata={"state": state.value, "attempt": attempt},
+                    )
+                )
 
     @staticmethod
     def _result_message(state: ExecutionState) -> str:

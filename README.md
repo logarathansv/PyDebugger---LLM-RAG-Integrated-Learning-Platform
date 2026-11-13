@@ -19,6 +19,8 @@ The backend is split into modules with narrow responsibilities:
 - `tutoring.py` — tutor prompts, citations, history, and progressive hints
 - `execution.py` — asynchronous, cancellable Docker execution jobs
 - `jobs.py` — bounded background queues, retries, deadlines, and progress
+- `monitoring.py` — durable latency, failure, usage, and cost metrics
+- `quality.py` — measured end-to-end engine evaluation
 - `engine.py` — the single composition root used by the application
 
 The supported vector backend is a local persistent Chroma collection. It records
@@ -41,6 +43,12 @@ worker and queue capacity. Jobs expose progress, current phase, attempt count,
 and stable terminal states. Invalid input fails immediately; transient storage
 or indexing errors retry up to the configured limit. See
 `docs/BACKGROUND_JOBS.md` for lifecycle and timeout semantics.
+
+The Operations tab reads durable local metrics from SQLite. Chat-token counts
+come from the model response; embedding-token counts are explicitly labeled
+estimates because the embedding integration does not return usage. Cost is only
+calculated after the deployment's contracted per-million-token rates are set in
+configuration. See `docs/QUALITY_MONITORING.md`.
 
 ## Run the supported application
 
@@ -92,6 +100,17 @@ uv lock --check
 ```
 
 The tests use fake AI providers, so they do not consume API credits.
+
+To run the versioned baseline against the configured Azure deployments and the
+real supported engine (this consumes model quota):
+
+```powershell
+uv run --locked python scripts/evaluate_engine.py evaluation/classroom_baseline.json `
+  --output evaluation-result.json
+```
+
+The evaluation uses an isolated temporary corpus and exits non-zero when its
+minimum pass rate is missed. The old random/mock evaluator was removed.
 
 ## Supported document flow
 

@@ -13,6 +13,10 @@ def valid_settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         vector_dir=tmp_path / "vectors",
         vector_collection="pydebugger-test-content",
+        monitoring_db_path=tmp_path / "monitoring.sqlite3",
+        chat_input_cost_per_million=1.0,
+        chat_output_cost_per_million=2.0,
+        embedding_cost_per_million=0.1,
         azure_openai_endpoint="https://example.openai.azure.com/",
         azure_openai_api_key="test-key",
         azure_chat_deployment="chat",
@@ -74,3 +78,10 @@ def test_from_env_reports_invalid_numeric_value(monkeypatch, tmp_path: Path):
 
     with pytest.raises(ConfigurationError, match="must be an integer"):
         Settings.from_env(tmp_path, require_ai=False)
+
+
+def test_settings_reject_negative_model_cost(tmp_path: Path):
+    settings = replace(valid_settings(tmp_path), chat_input_cost_per_million=-1)
+
+    with pytest.raises(ConfigurationError, match="CHAT_INPUT_COST"):
+        settings.validate()

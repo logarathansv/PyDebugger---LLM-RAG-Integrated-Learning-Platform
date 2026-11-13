@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from threading import Event, RLock
 import time
-from typing import Callable
+from typing import Callable, TypeVar
 import uuid
 
 from .config import ExecutionBackend, Settings
@@ -29,6 +29,13 @@ from .models import (
     HintProgress,
     IngestionJob,
     TutorResponse,
+)
+from .monitoring import (
+    MonitoredChatProvider,
+    MonitoredEmbeddingProvider,
+    MetricSummary,
+    MonitoringStore,
+    OperationMetric,
 )
 from .providers import (
     AzureOpenAIChatProvider,
@@ -64,9 +71,17 @@ class PyDebuggerEngine:
         transcript_provider: TranscriptProvider | None = None,
         vector_index: VectorIndex | None = None,
     ) -> None:
-        chat_provider = chat_provider or AzureOpenAIChatProvider(settings)
-        embedding_provider = embedding_provider or AzureOpenAIEmbeddingProvider(settings)
         self.settings = settings
+        self.monitor = MonitoringStore(
+            settings.monitoring_db_path,
+            chat_input_cost_per_million=settings.chat_input_cost_per_million,
+            chat_output_cost_per_million=settings.chat_output_cost_per_million,
+            embedding_cost_per_million=settings.embedding_cost_per_million,
+        )
+        raw_chat = chat_provider or AzureOpenAIChatProvider(settings)
+        raw_embeddings = embedding_provider or AzureOpenAIEmbeddingProvider(settings)
+        chat_provider = MonitoredChatProvider(raw_chat, self.monitor)
+        embedding_provider = MonitoredEmbeddingProvider(raw_embeddings, self.monitor)
         self.ingestor = DocumentIngestor()
         self.index = vector_index or ChromaVectorIndex(
             embedding_provider,
@@ -86,6 +101,7 @@ class PyDebuggerEngine:
             workers=settings.background_workers,
             queue_size=settings.background_queue_size,
             max_attempts=settings.execution_max_attempts,
+            monitor=self.monitor,
         )
         self.transcript_provider = transcript_provider
         self._documents: dict[str, DocumentSource] = {}
@@ -112,8 +128,12 @@ class PyDebuggerEngine:
         safe_name = self._safe_filename(filename)
         source_key = f"upload:{safe_name.casefold()}"
         with self._source_operation_lock(source_key):
-            return self._add_document_locked(
-                filename, data, declared_media_type, **control
+            return self._observe(
+                "ingestion.document",
+                lambda: self._add_document_locked(
+                    filename, data, declared_media_type, **control
+                ),
+                {"media_type": declared_media_type or "unknown"},
             )
 
     def _add_document_locked(
@@ -208,8 +228,12 @@ class PyDebuggerEngine:
     ) -> DocumentSource:
         video_id = parse_youtube_video_id(reference)
         with self._source_operation_lock(f"youtube:{video_id}"):
-            return self._add_youtube_transcript_locked(
-                reference, languages, **control
+            return self._observe(
+                "ingestion.youtube",
+                lambda: self._add_youtube_transcript_locked(
+                    reference, languages, **control
+                ),
+                {"language_count": len(languages)},
             )
 
     def _add_youtube_transcript_locked(
@@ -354,11 +378,23 @@ class PyDebuggerEngine:
         document_ids: set[str],
         history: list[ChatMessage] | None = None,
     ) -> TutorResponse:
-        known = {document.id for document in self.list_documents()}
-        selected = document_ids & known
-        if not selected:
-            raise ValueError("Select at least one indexed document")
-        return self.tutor.answer(query, mode, selected, history)
+        def answer_selected() -> TutorResponse:
+            known = {document.id for document in self.list_documents()}
+            selected = document_ids & known
+            if not selected:
+                raise ValueError("Select at least one indexed document")
+            return self.tutor.answer(query, mode, selected, history)
+
+        return self._observe(
+            "tutor.answer",
+            answer_selected,
+            {"selected_documents": len(document_ids), "history_messages": len(history or [])},
+        )
+
+    def monitoring_summary(
+        self, *, since_seconds: float | None = 86_400
+    ) -> tuple[MetricSummary, ...]:
+        return self.monitor.summaries(since_seconds=since_seconds)
 
     def next_hint(
         self,
@@ -366,11 +402,19 @@ class PyDebuggerEngine:
         history: list[ChatMessage] | None = None,
         previous_hints: list[str] | None = None,
     ) -> HintProgress:
-        return self.tutor.next_hint(problem, history or [], previous_hints or [])
+        return self._observe(
+            "tutor.hint",
+            lambda: self.tutor.next_hint(problem, history or [], previous_hints or []),
+            {"hint_level": len(previous_hints or []) + 1},
+        )
 
     def execute(self, source: str) -> ExecutionResult:
         execution_id = uuid.uuid4().hex
-        return self.executor.execute(source, execution_id)
+        return self._observe(
+            "execution.sync",
+            lambda: self.executor.execute(source, execution_id),
+            {"source_characters": len(source)},
+        )
 
     def start_execution(self, source: str) -> ExecutionJob:
         return self.execution.submit(source)
@@ -501,4 +545,37 @@ class PyDebuggerEngine:
             path.rmdir()
         except OSError:
             pass
+
+    def _observe(
+        self,
+        operation: str,
+        function: Callable[[], "_ObservedResult"],
+        metadata: dict[str, object] | None = None,
+    ) -> "_ObservedResult":
+        started = time.perf_counter()
+        try:
+            result = function()
+            self.monitor.record(
+                OperationMetric(
+                    operation,
+                    "success",
+                    (time.perf_counter() - started) * 1000,
+                    metadata=metadata,
+                )
+            )
+            return result
+        except Exception as error:
+            self.monitor.record(
+                OperationMetric(
+                    operation,
+                    "failure",
+                    (time.perf_counter() - started) * 1000,
+                    error_code=type(error).__name__,
+                    metadata=metadata,
+                )
+            )
+            raise
+
+
+_ObservedResult = TypeVar("_ObservedResult")
 

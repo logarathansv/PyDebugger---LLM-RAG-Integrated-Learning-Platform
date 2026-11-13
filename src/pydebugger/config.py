@@ -55,6 +55,10 @@ class Settings:
     data_dir: Path
     vector_dir: Path
     vector_collection: str
+    monitoring_db_path: Path
+    chat_input_cost_per_million: float
+    chat_output_cost_per_million: float
+    embedding_cost_per_million: float
     azure_openai_endpoint: str | None
     azure_openai_api_key: str | None = field(repr=False)
     azure_chat_deployment: str | None
@@ -98,12 +102,29 @@ class Settings:
         )
         if not vector_dir.is_absolute():
             vector_dir = project_root / vector_dir
+        monitoring_db_path = Path(
+            os.getenv(
+                "PYDEBUGGER_MONITORING_DB", str(data_dir / "monitoring.sqlite3")
+            )
+        )
+        if not monitoring_db_path.is_absolute():
+            monitoring_db_path = project_root / monitoring_db_path
         settings = cls(
             data_dir=data_dir.resolve(),
             vector_dir=vector_dir.resolve(),
             vector_collection=os.getenv(
                 "PYDEBUGGER_VECTOR_COLLECTION", "pydebugger-course-content"
             ).strip(),
+            monitoring_db_path=monitoring_db_path.resolve(),
+            chat_input_cost_per_million=_env_float(
+                "PYDEBUGGER_CHAT_INPUT_COST_PER_MILLION", 0.0
+            ),
+            chat_output_cost_per_million=_env_float(
+                "PYDEBUGGER_CHAT_OUTPUT_COST_PER_MILLION", 0.0
+            ),
+            embedding_cost_per_million=_env_float(
+                "PYDEBUGGER_EMBEDDING_COST_PER_MILLION", 0.0
+            ),
             azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             azure_chat_deployment=os.getenv("AZURE_CHAT_DEPLOYMENT"),
@@ -156,6 +177,8 @@ class Settings:
             errors.append("PYDEBUGGER_DATA_DIR must point to a directory")
         if self.vector_dir.exists() and not self.vector_dir.is_dir():
             errors.append("PYDEBUGGER_VECTOR_DIR must point to a directory")
+        if self.monitoring_db_path.exists() and not self.monitoring_db_path.is_file():
+            errors.append("PYDEBUGGER_MONITORING_DB must point to a file")
         if not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9]",
             self.vector_collection,
@@ -191,6 +214,12 @@ class Settings:
         self._check_range(
             errors, "PYDEBUGGER_RETRIEVAL_MIN_SCORE", self.retrieval_min_score, 0.0, 1.0
         )
+        for name, value in (
+            ("PYDEBUGGER_CHAT_INPUT_COST_PER_MILLION", self.chat_input_cost_per_million),
+            ("PYDEBUGGER_CHAT_OUTPUT_COST_PER_MILLION", self.chat_output_cost_per_million),
+            ("PYDEBUGGER_EMBEDDING_COST_PER_MILLION", self.embedding_cost_per_million),
+        ):
+            self._check_range(errors, name, value, 0.0, 10_000.0)
         self._check_range(
             errors,
             "PYDEBUGGER_EXECUTION_TIMEOUT_SECONDS",

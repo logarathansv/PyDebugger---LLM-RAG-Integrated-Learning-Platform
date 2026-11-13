@@ -144,7 +144,9 @@ with st.sidebar:
 mode = AssistantMode(
     st.radio("Assistant mode", [item.value for item in AssistantMode], horizontal=True)
 )
-chat_tab, runner_tab = st.tabs(["Tutor", "Python runner"])
+chat_tab, runner_tab, monitoring_tab = st.tabs(
+    ["Tutor", "Python runner", "Operations"]
+)
 
 with chat_tab:
     for message in st.session_state.messages:
@@ -261,4 +263,46 @@ with runner_tab:
                     st.markdown("**Standard error**")
                     st.code(result.stderr, language="text")
                 st.caption(f"Exit: {result.exit_code} · {result.duration_seconds:.3f}s")
+
+with monitoring_tab:
+    st.subheader("Last 24 hours")
+    summaries = engine.monitoring_summary()
+    if engine.monitor.last_error:
+        st.warning(engine.monitor.last_error)
+    if not summaries:
+        st.info("No operations have been recorded yet.")
+    else:
+        total_calls = sum(item.calls for item in summaries)
+        total_failures = sum(item.failures for item in summaries)
+        total_cost = sum(item.cost_usd for item in summaries)
+        calls_col, failures_col, cost_col = st.columns(3)
+        calls_col.metric("Operations", total_calls)
+        failures_col.metric("Failures", total_failures)
+        if any(item.cost_configured for item in summaries):
+            cost_col.metric("Tracked model cost", f"${total_cost:.6f}")
+        else:
+            cost_col.metric("Tracked model cost", "Not configured")
+        st.dataframe(
+            [
+                {
+                    "operation": item.operation,
+                    "calls": item.calls,
+                    "failures": item.failures,
+                    "avg_ms": round(item.average_latency_ms, 2),
+                    "p95_ms": round(item.p95_latency_ms, 2),
+                    "input_tokens": item.input_tokens,
+                    "output_tokens": item.output_tokens,
+                    "embedding_tokens_est.": item.embedding_tokens,
+                    "cost_usd": round(item.cost_usd, 8),
+                }
+                for item in summaries
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        if not any(item.cost_configured for item in summaries):
+            st.caption(
+                "Set the three PYDEBUGGER_*_COST_PER_MILLION values to your "
+                "Azure contract rates to calculate cost."
+            )
 

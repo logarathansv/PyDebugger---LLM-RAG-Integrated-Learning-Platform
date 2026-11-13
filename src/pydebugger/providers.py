@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from .config import Settings
@@ -9,6 +10,14 @@ from .config import Settings
 
 class ChatProvider(Protocol):
     def complete(self, system_prompt: str, user_prompt: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class ChatCompletion:
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str | None = None
 
 
 class EmbeddingProvider(Protocol):
@@ -38,10 +47,22 @@ class AzureOpenAIChatProvider(ChatProvider):
         )
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
+        return self.complete_with_usage(system_prompt, user_prompt).text
+
+    def complete_with_usage(
+        self, system_prompt: str, user_prompt: str
+    ) -> ChatCompletion:
         response = self._client.invoke(
             [("system", system_prompt), ("human", user_prompt)]
         )
-        return str(response.content)
+        usage = response.usage_metadata or {}
+        metadata = response.response_metadata or {}
+        return ChatCompletion(
+            text=str(response.content),
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            model=str(metadata.get("model_name") or metadata.get("model") or "") or None,
+        )
 
 
 class AzureOpenAIEmbeddingProvider(EmbeddingProvider):
@@ -89,6 +110,11 @@ class AzureOpenAIProvider(ChatProvider, EmbeddingProvider):
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         return self._chat.complete(system_prompt, user_prompt)
+
+    def complete_with_usage(
+        self, system_prompt: str, user_prompt: str
+    ) -> ChatCompletion:
+        return self._chat.complete_with_usage(system_prompt, user_prompt)
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         return self._embeddings.embed_documents(texts)
