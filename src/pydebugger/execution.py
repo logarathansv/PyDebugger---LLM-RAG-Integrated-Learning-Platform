@@ -17,6 +17,12 @@ from typing import BinaryIO, Protocol
 import uuid
 
 from .config import ConfigurationError, Settings
+from .diagnostics import (
+    PYTHON_RUNNER,
+    extract_diagnostic,
+    format_traceback,
+    remove_diagnostic_records,
+)
 from .models import ExecutionJob, ExecutionResult, ExecutionState
 
 
@@ -43,9 +49,11 @@ class DisabledExecutor:
 
 
 class _BoundedOutput:
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, tail_limit: int = 65_536) -> None:
         self.limit = limit
+        self.tail_limit = tail_limit
         self._buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        self._tails = {"stdout": bytearray(), "stderr": bytearray()}
         self._total = 0
         self._lock = Lock()
         self.exceeded = Event()
@@ -54,6 +62,10 @@ class _BoundedOutput:
         try:
             while chunk := stream.read(4096):
                 with self._lock:
+                    tail = self._tails[name]
+                    tail.extend(chunk)
+                    if len(tail) > self.tail_limit:
+                        del tail[: len(tail) - self.tail_limit]
                     remaining = self.limit - self._total
                     if remaining > 0:
                         accepted = chunk[:remaining]
@@ -67,6 +79,11 @@ class _BoundedOutput:
     def text(self, name: str) -> str:
         with self._lock:
             value = bytes(self._buffers[name])
+        return value.decode("utf-8", errors="replace")
+
+    def tail_text(self, name: str) -> str:
+        with self._lock:
+            value = bytes(self._tails[name])
         return value.decode("utf-8", errors="replace")
 
 
@@ -215,7 +232,12 @@ class DockerCodeExecutor:
                     cancelled = execution_id in self._cancelled
                     self._cancelled.discard(execution_id)
 
-            stderr = output.text("stderr")
+            diagnostic = (
+                extract_diagnostic(output.tail_text("stderr"))
+                if exit_code not in {0, None}
+                else None
+            )
+            stderr = remove_diagnostic_records(output.text("stderr"))
             if timed_out:
                 stderr = self._append_message(
                     stderr,
@@ -241,6 +263,8 @@ class DockerCodeExecutor:
                 cancelled=cancelled,
                 resource_limit_exceeded=output_exceeded or oom_killed,
                 truncated=output_exceeded,
+                diagnostic=diagnostic,
+                traceback=format_traceback(diagnostic) if diagnostic else "",
             )
 
     def cancel(self, execution_id: str) -> bool:
@@ -293,9 +317,7 @@ class DockerCodeExecutor:
         ]
         if self.policy.runtime:
             command.extend(["--runtime", self.policy.runtime])
-        command.extend(
-            [self.policy.image, "python", "-I", "-B", "/workspace/submission.py"]
-        )
+        command.extend([self.policy.image, "python", "-I", "-B", "-c", PYTHON_RUNNER])
         return command
 
     def _stop(self, active: _ActiveExecution) -> None:
@@ -416,7 +438,7 @@ class ExecutionService:
                 ExecutionState.CANCELLED
                 if result.cancelled
                 else ExecutionState.FAILED
-                if result.disabled_reason
+                if result.disabled_reason or result.exit_code not in {None, 0}
                 else ExecutionState.COMPLETED
             )
             with self._lock:

@@ -94,6 +94,49 @@ def test_docker_executor_enforces_timeout_and_output_limit():
     assert_no_execution_containers()
 
 
+def test_docker_executor_reports_syntax_error_at_original_line():
+    result = executor().execute(
+        "value = 1\nif True print('broken'):\n    pass\n", uuid.uuid4().hex
+    )
+
+    assert result.exit_code == 1
+    assert result.diagnostic is not None
+    assert result.diagnostic.exception_type == "SyntaxError"
+    assert result.diagnostic.line_number == 2
+    assert result.diagnostic.column_number == 9
+    assert 'File "submission.py", line 2' in result.traceback
+    assert "SyntaxError: invalid syntax" in result.traceback
+    assert "<string>" not in result.traceback
+    assert_no_execution_containers()
+
+
+def test_docker_executor_reports_complete_runtime_trace():
+    source = (
+        "def divide(value):\n"
+        "    return 10 / value\n"
+        "\n"
+        "def calculate():\n"
+        "    return divide(0)\n"
+        "\n"
+        "print(calculate())\n"
+    )
+    result = executor().execute(source, uuid.uuid4().hex)
+
+    assert result.exit_code == 1
+    assert result.diagnostic is not None
+    assert result.diagnostic.exception_type == "ZeroDivisionError"
+    assert result.diagnostic.line_number == 2
+    assert [frame.line_number for frame in result.diagnostic.frames] == [7, 5, 2]
+    assert [frame.function_name for frame in result.diagnostic.frames] == [
+        "<module>",
+        "calculate",
+        "divide",
+    ]
+    assert "ZeroDivisionError: division by zero" in result.traceback
+    assert "<string>" not in result.traceback
+    assert_no_execution_containers()
+
+
 def test_docker_execution_can_be_cancelled():
     service = ExecutionService(executor(timeout=10))
     job = service.submit("while True: pass")

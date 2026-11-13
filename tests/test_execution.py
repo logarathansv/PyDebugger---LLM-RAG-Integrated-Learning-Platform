@@ -45,13 +45,14 @@ def test_docker_command_applies_isolation_and_resource_limits(tmp_path: Path):
     assert "--cpus 0.5" in rendered
     assert "readonly" in rendered
     assert "--pull never" in rendered
-    assert command[-5:] == [
+    assert command[-6:-1] == [
         "python:3.13-slim@sha256:abc",
         "python",
         "-I",
         "-B",
-        "/workspace/submission.py",
+        "-c",
     ]
+    assert 'compile(source, filename, "exec")' in command[-1]
 
 
 class BlockingExecutor:
@@ -85,3 +86,29 @@ def test_execution_service_cancels_running_job():
         time.sleep(0.01)
 
     assert service.get(job.id).result.cancelled
+
+
+class FailingExecutor:
+    def validate_runtime(self) -> None:
+        return None
+
+    def execute(self, source: str, execution_id: str) -> ExecutionResult:
+        return ExecutionResult(execution_id=execution_id, exit_code=1)
+
+    def cancel(self, execution_id: str) -> bool:
+        return False
+
+
+def test_execution_service_marks_nonzero_exit_as_failed():
+    service = ExecutionService(FailingExecutor())
+    job = service.submit("raise RuntimeError('broken')")
+    deadline = time.monotonic() + 1
+
+    while service.get(job.id).state in {
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+    }:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    assert service.get(job.id).state is ExecutionState.FAILED

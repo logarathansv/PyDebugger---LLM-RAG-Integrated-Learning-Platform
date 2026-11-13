@@ -57,6 +57,13 @@ storage, output, source-size, and time limits. Runs can be cancelled and are
 forcibly cleaned up. See `docs/EXECUTION_SECURITY.md` for the threat model and
 deployment requirements.
 
+Syntax and runtime failures are returned as structured diagnostics with the
+original submitted line and column numbers. Runtime traces contain only learner
+frames from `submission.py`; sandbox bootstrap frames are hidden. The supported
+interface intentionally provides **Run** and **Cancel** only. Experimental pause,
+step, breakpoint, and watch controls are not presented until a real interactive
+debugger protocol is implemented.
+
 ## Test the backend
 
 ```powershell

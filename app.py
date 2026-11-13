@@ -147,7 +147,11 @@ with runner_tab:
                 st.warning(result.disabled_reason)
             else:
                 st.code(result.stdout or "No output", language="text")
+                if result.traceback:
+                    st.markdown("**Python traceback**")
+                    st.code(result.traceback, language="text")
                 if result.stderr:
-                    st.error(result.stderr)
+                    st.markdown("**Standard error**")
+                    st.code(result.stderr, language="text")
                 st.caption(f"Exit: {result.exit_code} · {result.duration_seconds:.3f}s")
 

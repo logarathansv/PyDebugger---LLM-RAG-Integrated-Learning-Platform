@@ -669,36 +669,14 @@ print(factorial(5))"""),
             
         with col2:
             st.markdown("### Execution Control")
-            execution_mode = st.radio(
-                "Mode",
-                ["Run", "Step", "Debug"],
-                horizontal=True
-            )
-            
             if st.button("▶️ Run", key="run_btn"):
                 sandbox = DebugSandbox()
                 result = sandbox.execute_with_debug(
                     code,
-                    step_mode=(execution_mode != "Run")
+                    step_mode=False
                 )
                 st.session_state.debug_result = result
                 st.session_state.sandbox = sandbox
-                st.rerun()
-                
-            if st.session_state.get('debug_result'):
-                if st.button("⏸️ Pause", disabled=execution_mode != "Debug"):
-                    pass
-                if st.button("⏩ Continue", disabled=execution_mode != "Debug"):
-                    pass
-                
-            st.markdown("### Breakpoints")
-            if st.button("➕ Add Breakpoint"):
-                pass
-                
-            st.markdown("### Watch Expressions")
-            watch_expr = st.text_input("Add watch expression")
-            if watch_expr and st.button("Add"):
-                st.session_state.sandbox.add_watch_expression(watch_expr)
                 st.rerun()
     
     with tab2:

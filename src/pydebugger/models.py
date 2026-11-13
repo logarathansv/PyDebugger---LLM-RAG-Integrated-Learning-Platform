@@ -65,6 +65,26 @@ class TutorResponse:
 
 
 @dataclass(frozen=True)
+class TracebackFrame:
+    file_name: str
+    line_number: int
+    function_name: str
+    source_line: str | None = None
+
+
+@dataclass(frozen=True)
+class PythonDiagnostic:
+    exception_type: str
+    message: str
+    line_number: int | None = None
+    column_number: int | None = None
+    end_line_number: int | None = None
+    end_column_number: int | None = None
+    source_line: str | None = None
+    frames: tuple[TracebackFrame, ...] = ()
+
+
+@dataclass(frozen=True)
 class ExecutionResult:
     execution_id: str | None = None
     stdout: str = ""
@@ -76,6 +96,8 @@ class ExecutionResult:
     resource_limit_exceeded: bool = False
     truncated: bool = False
     disabled_reason: str | None = None
+    diagnostic: PythonDiagnostic | None = None
+    traceback: str = ""
 
 
 @dataclass(frozen=True)
