@@ -1,96 +1,110 @@
-# Project-CIP
+# PyDebugger Learning Platform
 
-A compact README for the Project-CIP repository. This document describes the project's objective, workflow, technology stack, deployment, repository layout, how to run the code locally, and helpful notes.
+PyDebugger is a document-grounded Python tutor and debugging assistant. The
+supported application has one backend composition root and one Streamlit entry
+point. Earlier scripts remain in `langchain-openai/` and `webscrapping/` as
+historical experiments; new development should use `src/pydebugger/` and
+`app.py`.
 
-## Objective
+## Supported architecture
 
-Project-CIP implements an information retrieval and RAG (Retrieval-Augmented Generation) toolkit and experiments built around LangChain, Chroma vector stores, and custom scripts to extract, index and query documents (PDFs and other sources). The project appears to support:
+The backend is split into modules with narrow responsibilities:
 
--   Document ingestion and preprocessing
--   Building a Chroma vector database from documents
--   Running RAG-style question-answering and classification experiments
--   Small utilities for evaluation and YouTube / web scraping related workflows
+- `config.py` — validated environment configuration
+- `providers.py` — AI chat and embedding provider adapters
+- `ingestion.py` — safe document extraction and chunking
+- `youtube.py` — validated video references and transcript-provider adapter
+- `retrieval.py` — vector indexing and corpus-wide ranking
+- `tutoring.py` — tutor prompts, citations, history, and progressive hints
+- `execution.py` — asynchronous, cancellable Docker execution jobs
+- `engine.py` — the single composition root used by the application
 
-The repository is primarily used for research, prototyping, and demonstration of retrieval + LLM workflows.
+The current vector index is intentionally in memory for the first consolidation
+milestone. Durable storage, authentication, course ownership, and permissions
+can be added later behind these service boundaries.
 
-## Deployed demo
+Uploads support validated PDF, UTF-8 text, CSV, PPTX, Markdown, and restricted
+reStructuredText. Chunks retain file hashes, media types, page/slide/row or
+heading locations, line and character ranges, and source origin. YouTube URLs or
+video IDs can be indexed from available transcripts with timestamp and language
+metadata. Transcript availability depends on YouTube and may be blocked from
+some cloud-hosting IP ranges.
 
-A demo is deployed on Posit Cloud at:
+The validation rules, parser limits, metadata contract, and transcript behavior
+are documented in `docs/INGESTION.md`.
 
-https://logarathan-pydebugger.share.connect.posit.cloud/
+## Run the supported application
 
-Visit the URL to see interactive notebooks or web interfaces (hosted by Posit) that are part of this project.
+Python 3.13 is the supported runtime. `uv.lock` pins the complete dependency
+graph, and `.python-version` pins the Python patch release.
 
-## High-level workflow
-
-1. Data collection & preprocessing
-    - Extract text from PDFs or other source files (scripts under `webscrapping/`, `preprocessing/`, and `deep-api/`).
-2. Embedding & vector store creation
-    - Convert cleaned text into embeddings and store them in a Chroma vector DB (`langchain-openai/chroma_db/` and `chroma_db/`).
-3. Retrieval & RAG pipeline
-    - Use LangChain-based pipelines and custom RAG scripts (`langchain-openai/rag_*`, `deep-api/`) to retrieve context and generate answers with an LLM.
-4. Evaluation & metrics
-    - Run evaluation scripts (`langchain-openai/evaluation.py`) and visualize confusion matrices and classification metrics.
-5. Deployment
-    - Host notebooks or small web UIs on Posit Cloud for interactive demos.
-
-## Tech stack
-
--   Python 3.x
--   LangChain (for orchestration of embedding, retrieval, and generation)
--   OpenAI (or other LLM provider) for text generation via LangChain connectors
--   Chroma DB for vector storage and similarity search
--   Common Python libraries: numpy, pandas, pdf parsing libraries (PyPDF2, pdfminer.six or similar), scikit-learn (for metrics), matplotlib/ seaborn (for plots)
--   Posit Cloud (deployment platform for notebooks / Shiny / Plumber apps)
-
-See `requirements.txt` for the dependencies present in this repository.
-
-## Repository structure (selected files & folders)
-
--   `deep-api/` — scripts for deeper RAG experiments and APIs (`deepseek.py`, `rag_deep.py`).
--   `langchain-openai/` — primary LangChain integration, RAG scripts, evaluation tools, and the Chroma DB folder.
-    -   `chroma_db/` — Chroma database files and stored vectors (binary files and sqlite DBs).
-    -   `evaluation.py` — evaluation and metrics code.
-    -   `rag_chatbot_chroma.py`, `rag_with_chatbot.py` — RAG chatbot examples.
--   `webscrapping/` — scraping and preprocessing helper scripts and notes.
--   `preprocessing/` — text processing and cleaning scripts.
--   `PyDebug RAG/` — a separate folder containing vector DBs and example PDFs.
--   `requirements.txt` — Python dependency list.
-
-Note: The repo contains several large binary files (Chroma DB bins) under `langchain-openai/chroma_db/` and `chroma_db/`. These are the persisted vector store files used by local experiments.
-
-## How to run locally (quick start)
-
-1. Create a Python virtual environment and activate it (Windows cmd example):
-
-```cmd
-python -m venv .venv
-.venv\Scripts\activate
+```powershell
+uv sync --locked --extra dev
+Copy-Item .env.example .env
+uv run --locked streamlit run app.py
 ```
 
-2. Install dependencies:
+Populate `.env` with an Azure OpenAI base endpoint, API key, chat deployment,
+and embedding deployment. The endpoint should be the resource base URL, not a
+deployment-specific request URL.
 
-```cmd
-pip install -r requirements.txt
+Configuration is validated before providers or storage are initialized. Invalid
+URLs, placeholders, numeric limits, mutable execution images, and unavailable
+Docker runtimes produce a clear startup error without printing secrets.
+
+Code execution is disabled by default. To enable the isolated runner, start the
+Docker Linux engine and pull the exact pinned image from `.env.example`:
+
+```powershell
+docker pull python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+# Set PYDEBUGGER_EXECUTION_BACKEND="docker" in .env
+uv run --locked streamlit run app.py
 ```
 
-3. Open a script or notebook to run. Example: run the main LangChain demo from `langchain-openai/main.py` or experiment with `langchain-openai/rag_with_chatbot.py`.
+Each submission runs outside the app server in a disposable container with no
+network, a read-only root filesystem and source mount, an unprivileged user, no
+Linux capabilities, no-new-privileges, and CPU, memory, process, temporary
+storage, output, source-size, and time limits. Runs can be cancelled and are
+forcibly cleaned up. See `docs/EXECUTION_SECURITY.md` for the threat model and
+deployment requirements.
 
-4. If you need to rebuild the Chroma DB, run the ingestion/preprocessing scripts (look for PDF processing and vectorization code in `preprocessing/` and `langchain-openai/`).
+Syntax and runtime failures are returned as structured diagnostics with the
+original submitted line and column numbers. Runtime traces contain only learner
+frames from `submission.py`; sandbox bootstrap frames are hidden. The supported
+interface intentionally provides **Run** and **Cancel** only. Experimental pause,
+step, breakpoint, and watch controls are not presented until a real interactive
+debugger protocol is implemented.
 
-## Notes & best practices
+## Test the backend
 
--   Sensitive keys: do not hard-code API keys in repository files. Use environment variables or a secrets manager.
--   Chroma vector DB files can be large. Back them up separately and avoid committing large binary blobs to git unless necessary.
--   If you plan to re-deploy on Posit or another host, pin dependency versions in `requirements.txt` to improve reproducibility.
+```powershell
+uv run --locked --extra dev pytest
+uv lock --check
+```
 
-## Troubleshooting
+The tests use fake AI providers, so they do not consume API credits.
 
--   Missing packages or import errors: re-check `requirements.txt` and install missing packages into the virtual environment.
--   Chroma DB access errors: ensure file permissions and correct working directory when loading `chroma_db`.
+## Supported document flow
 
-## Credits
+1. `PyDebuggerEngine.add_document()` validates and stores the upload.
+2. `DocumentIngestor` extracts text and preserves source locations.
+3. `InMemoryVectorIndex` embeds chunks and ranks matches across all selected files.
+4. `TutorService` builds a bounded prompt with conversation history and citations.
+5. The configured `ChatProvider` generates the response.
 
-Author/maintainer: logarathansv
+Supported uploads are PDF, TXT, Markdown, reStructuredText, CSV, and PPTX.
+reStructuredText raw directives and external file insertion are disabled.
 
-If you want this README adjusted (add examples, screenshots, or detailed run commands for specific scripts), tell me which script or notebook you want documented and I'll add it.
+## Current milestone boundaries
+
+- The document catalog and vector index live for the current app session only.
+- Azure OpenAI is the supported provider adapter.
+- Code execution is off unless the Docker backend and pinned image pass startup checks.
+- Authentication, courses, enrollment, durable student history, assignments,
+  and instructor dashboards are planned after the core engine is strengthened.
+
+## Legacy experiments
+
+Install `requirements-legacy.txt` only when reproducing the older experimental
+scripts. They use separate app flows and are not the supported production path.
+Some legacy documentation in `USAGE.md` describes those earlier scripts.

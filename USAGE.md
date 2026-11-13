@@ -1,4 +1,8 @@
-# Usage and Deployment Guide — Project-CIP
+# Legacy Usage and Deployment Guide — Project-CIP
+
+> This guide documents the experimental scripts under `langchain-openai/`.
+> For the supported consolidated application, follow `README.md` and run
+> `streamlit run app.py`.
 
 This document expands the quick-start items in `README.md` with concrete steps for running the main RAG scripts, rebuilding the Chroma vector store, setting environment variables, and notes for deploying to Posit Cloud.
 

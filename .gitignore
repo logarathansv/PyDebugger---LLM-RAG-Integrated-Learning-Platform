@@ -2,6 +2,10 @@
 .idea
 .devcontainer
 .vscode
+.venv
 __pycache__
+.pytest_cache
+.pydebugger-data
+*.egg-info
 deep-api
 together

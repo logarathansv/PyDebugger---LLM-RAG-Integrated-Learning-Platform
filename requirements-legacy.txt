@@ -1,0 +1,25 @@
+# Dependencies used only by the archived experiments under langchain-openai/ and
+# webscrapping/. The supported application dependencies live in pyproject.toml.
+langchain
+langchain-community
+langchain-core
+openai
+youtube-transcript-api
+sentence-transformers
+together
+transformers
+chromadb
+faiss-cpu
+diskcache
+torch
+langchain-ollama
+langchain-text-splitters
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+requests
+beautifulsoup4
+nltk
+pygments
